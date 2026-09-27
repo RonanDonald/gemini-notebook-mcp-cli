@@ -37,6 +37,7 @@ dependencies = [
     "typing_extensions>=4.4.0; python_version < '3.12'",
     "tomlkit>=0.13,<1",
     "packaging>=24,<27",
+    "questionary>=2.1,<3",
 ]
 
 

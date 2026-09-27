@@ -334,13 +334,17 @@ nlm skill install alef-agent
 
 ### Setup (MCP Server Configuration)
 
-Configure the Gemini Notebook MCP server for AI tools in one command:
+Configure the Gemini Notebook MCP server and optional skills for AI tools:
 
-The configured server name is `gemini-notebook-mcp`; the executable remains
-`notebooklm-mcp` for compatibility with existing installations.
+Running bare `nlm setup` opens an interactive wizard that detects installed tools,
+configures MCP servers with private backups, and offers optional skill installation:
 
 ```bash
-nlm setup add claude-code       # Configure via `claude mcp add`
+nlm setup                       # Interactive wizard: Add, Remove, or Get JSON (recommended)
+nlm setup add claude-code       # Direct command: Configure via `claude mcp add`
+nlm setup add codex             # Direct command: Configure Codex CLI / ChatGPT desktop
+nlm setup add github-copilot --scope user  # Configure VS Code user profile
+nlm setup add github-copilot    # Configure workspace (.vscode/mcp.json)
 nlm setup add claude-desktop    # Configure detected Claude Desktop profile(s)
 nlm setup add claude-desktop --profile 3p  # Select Relay AI / 3P explicitly
 nlm setup remove claude-desktop --profile regular  # Remove from regular explicitly

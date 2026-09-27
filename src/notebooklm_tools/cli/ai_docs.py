@@ -825,6 +825,7 @@ Checks: installation, authentication, browser profile, AI tool configs. Shows su
 
 **Setup** - Configure MCP server for AI tools:
 ```bash
+nlm setup                               # Guided interactive setup wizard (recommended)
 nlm setup list                          # Show all clients and their MCP status
 nlm setup add claude-code               # Add to Claude Code (via claude mcp add)
 nlm setup add claude-desktop            # Add to Claude Desktop config

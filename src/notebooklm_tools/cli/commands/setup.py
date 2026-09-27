@@ -34,7 +34,7 @@ console = make_console()
 app = typer.Typer(
     name="setup",
     help="Configure Gemini Notebook MCP server for AI tools",
-    no_args_is_help=True,
+    no_args_is_help=False,
 )
 
 # MCP server identifier used in client configuration files.
@@ -1500,22 +1500,31 @@ def _setup_json() -> None:
     console.print(Syntax(json_str, "json", theme="monokai", padding=1))
     console.print()
 
-    if platform.system() == "Darwin" and Confirm.ask("Copy to clipboard?", default=True):
-        try:
-            subprocess.run(
-                ["pbcopy"],
-                input=json_str.encode(),
-                check=True,
-                timeout=5,
-            )
+    if Confirm.ask("Copy to clipboard?", default=True):
+        from notebooklm_tools.cli.commands.setup_wizard import copy_to_clipboard
+
+        if copy_to_clipboard(json_str):
             console.print("[green]✓[/green] Copied to clipboard")
-        except (subprocess.SubprocessError, OSError):
-            console.print("[yellow]Warning:[/yellow] Could not copy to clipboard")
+        else:
+            console.print("[yellow]Warning:[/yellow] Could not copy to clipboard (no clipboard utility available)")
 
 
 # =============================================================================
 # Commands
 # =============================================================================
+
+
+@app.callback(invoke_without_command=True)
+def setup_callback(ctx: typer.Context) -> None:
+    """Configure Gemini Notebook MCP server for AI tools."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from notebooklm_tools.cli.commands.setup_wizard import run_setup_wizard
+
+    raise typer.Exit(run_setup_wizard())
+
+
+
 
 
 @app.command("add")
