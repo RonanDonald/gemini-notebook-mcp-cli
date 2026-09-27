@@ -21,6 +21,12 @@ from rich.prompt import Confirm, Prompt
 from rich.syntax import Syntax
 from rich.table import Table
 
+from notebooklm_tools.cli.setup_safety import (
+    ConfigParseError,
+    atomic_write_text,
+    backup_existing,
+    read_json_config,
+)
 from notebooklm_tools.cli.utils import is_tool_on_system, make_console
 
 console = make_console()
@@ -61,19 +67,21 @@ def _find_mcp_server_path() -> str | None:
 
 
 def _read_json_config(path: Path) -> dict:
-    """Read a JSON config file, returning empty dict if missing or invalid."""
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
+    """Read a JSON config file, returning empty dict if missing.
+
+    Raises:
+        ConfigParseError: If the file exists but is malformed JSON or not an object.
+    """
+    return read_json_config(path)
 
 
-def _write_json_config(path: Path, config: dict) -> None:
-    """Write a JSON config file, creating parent dirs as needed."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(config, indent=2) + "\n")
+def _write_json_config(path: Path, config: dict) -> Path | None:
+    """Write a JSON config file atomically, creating a private backup if it exists."""
+    backup = backup_existing(path, label="mcp-config")
+    rendered = json.dumps(config, indent=2) + "\n"
+    json.loads(rendered)  # validate serialization
+    atomic_write_text(path, rendered)
+    return backup
 
 
 def _entry_command_tokens(entry: object) -> list[str]:
