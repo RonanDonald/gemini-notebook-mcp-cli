@@ -14,9 +14,9 @@ import re
 import shutil
 import subprocess
 import tomllib
-import tomlkit
 from pathlib import Path
 
+import tomlkit
 import typer
 from rich.prompt import Confirm, Prompt
 from rich.syntax import Syntax
@@ -276,9 +276,7 @@ def _detect_chatgpt_desktop() -> bool:
     for path in _chatgpt_desktop_candidate_paths():
         if path.exists():
             return True
-    if platform.system() == "Linux" and shutil.which("chatgpt"):
-        return True
-    return False
+    return platform.system() == "Linux" and bool(shutil.which("chatgpt"))
 
 
 def _opencode_config_path() -> Path:
@@ -663,18 +661,25 @@ def _complete_client(ctx, param, incomplete: str) -> list[str]:
 
 def _setup_claude_code() -> bool:
     """Add Gemini Notebook MCP to Claude Code via `claude mcp add`."""
+    config_path = Path.home() / ".claude.json"
+    config = _read_json_config(config_path)
+    if _is_configured(config):
+        console.print("[green]✓[/green] Already configured in Claude Code")
+        return True
+
     claude_cmd = shutil.which("claude")
     if not claude_cmd:
         console.print("[yellow]Warning:[/yellow] 'claude' command not found in PATH")
         console.print("  Install Claude Code: https://docs.anthropic.com/en/docs/claude-code")
         console.print()
-        console.print("  Manual setup — add to [dim]~/.claude/settings.json[/dim]:")
+        console.print("  Manual setup — add to [dim]~/.claude.json[/dim]:")
         console.print(
             f'    "mcpServers": {{ "{MCP_SERVER_NAME}": {{ "command": "{MCP_SERVER_CMD}" }} }}'
         )
         return False
 
     try:
+        backup_existing(config_path, label="claude-code-config")
         result = subprocess.run(
             [claude_cmd, "mcp", "add", "-s", "user", MCP_SERVER_NAME, "--", MCP_SERVER_CMD],
             capture_output=True,
@@ -874,11 +879,13 @@ def _setup_github_copilot(scope: str = "project") -> bool:
             if config_path.exists():
                 backup_existing(config_path, label="copilot-config")
             try:
-                payload = json.dumps({
-                    "name": MCP_SERVER_NAME,
-                    "command": binary_path,
-                    "args": [],
-                })
+                payload = json.dumps(
+                    {
+                        "name": MCP_SERVER_NAME,
+                        "command": binary_path,
+                        "args": [],
+                    }
+                )
                 result = subprocess.run(
                     [code_cmd, "--add-mcp", payload],
                     capture_output=True,
@@ -909,7 +916,9 @@ def _setup_github_copilot(scope: str = "project") -> bool:
         if _is_vscode_mcp_configured(config):
             if migrated:
                 _write_json_config(config_path, config)
-                console.print(f"[green]✓[/green] Updated GitHub Copilot (user) to {MCP_SERVER_NAME}")
+                console.print(
+                    f"[green]✓[/green] Updated GitHub Copilot (user) to {MCP_SERVER_NAME}"
+                )
             else:
                 console.print("[green]✓[/green] Already configured in GitHub Copilot (user)")
             return True
@@ -1030,7 +1039,9 @@ def _setup_antigravity() -> bool:
     return True
 
 
-def _edit_codex_entry(path: Path, *, command: str | None = None, remove: bool = False) -> Path | None:
+def _edit_codex_entry(
+    path: Path, *, command: str | None = None, remove: bool = False
+) -> Path | None:
     """Safely add or remove Gemini Notebook MCP entry in config.toml using tomlkit."""
     if not path.exists() and remove:
         return None
@@ -1046,15 +1057,14 @@ def _edit_codex_entry(path: Path, *, command: str | None = None, remove: bool = 
     if remove:
         if "mcp_servers" in doc:
             servers = doc["mcp_servers"]
-            for name in MCP_SERVER_NAMES:
-                if name in servers:
-                    del servers[name]
+            for name in _configured_mcp_names(servers):
+                del servers[name]
     else:
         if "mcp_servers" not in doc:
             doc["mcp_servers"] = tomlkit.table()
         servers = doc["mcp_servers"]
         for legacy in LEGACY_MCP_SERVER_NAMES:
-            if legacy in servers and legacy != MCP_SERVER_NAME:
+            if legacy in servers and _is_our_mcp_entry(legacy, servers[legacy]):
                 del servers[legacy]
 
         entry = servers.get(MCP_SERVER_NAME)
@@ -1139,7 +1149,9 @@ def _setup_codex(repair: bool = False) -> bool:
                 timeout=10,
             )
             if result.returncode != 0 and "already exists" not in result.stderr.lower():
-                console.print(f"[yellow]Warning:[/yellow] codex mcp add returned: {result.stderr.strip()}")
+                console.print(
+                    f"[yellow]Warning:[/yellow] codex mcp add returned: {result.stderr.strip()}"
+                )
                 return False
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
             console.print(f"[yellow]Warning:[/yellow] Could not run codex command: {e}")
@@ -1152,7 +1164,9 @@ def _setup_codex(repair: bool = False) -> bool:
         return False
 
     if repair:
-        console.print(f"[green]✓[/green] Repaired Codex / ChatGPT desktop configuration ({repair_reason})")
+        console.print(
+            f"[green]✓[/green] Repaired Codex / ChatGPT desktop configuration ({repair_reason})"
+        )
     else:
         console.print("[green]✓[/green] Added to Codex CLI / ChatGPT desktop")
     console.print(f"  [dim]{config_path}[/dim]")
@@ -1232,7 +1246,9 @@ def _detect_tool(client_id: str) -> bool:
         "opencode": ("opencode", [_opencode_config_path()]),
     }
     if client_id == "codex":
-        return _detect_chatgpt_desktop() or is_tool_on_system(binary="codex", root_dirs=[_codex_config_path()])
+        return _detect_chatgpt_desktop() or is_tool_on_system(
+            binary="codex", root_dirs=[_codex_config_path()]
+        )
 
     entry = detection.get(client_id)
     if not entry:
@@ -1247,16 +1263,8 @@ def _is_already_configured(client_id: str) -> bool:
     """Check if MCP is already configured for a client."""
     try:
         if client_id == "claude-code":
-            claude_cmd = shutil.which("claude")
-            if claude_cmd:
-                result = subprocess.run(
-                    [claude_cmd, "mcp", "list"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                return _cli_output_contains_mcp(result.stdout)
-            return False
+            config = _read_json_config(Path.home() / ".claude.json")
+            return _is_configured(config)
 
         elif client_id == "claude-desktop":
             paths = _claude_desktop_profile_paths()
@@ -1282,22 +1290,10 @@ def _is_already_configured(client_id: str) -> bool:
             config = _read_json_config(_antigravity_config_path())
             return _is_configured(config)
         elif client_id == "codex":
-            codex_cmd = shutil.which("codex")
-            if codex_cmd:
-                result = subprocess.run(
-                    [codex_cmd, "mcp", "list"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                return _cli_output_contains_mcp(result.stdout)
-            else:
-                # Check config.toml directly
-                toml_path = _codex_config_path() / "config.toml"
-                if toml_path.exists():
-                    config = tomllib.loads(toml_path.read_text(encoding="utf-8"))
-                    mcp = config.get("mcp_servers", {})
-                    return bool(_configured_mcp_names(mcp))
+            toml_path = _codex_config_path() / "config.toml"
+            if toml_path.exists():
+                config = tomllib.loads(toml_path.read_text(encoding="utf-8"))
+                return bool(_configured_mcp_names(config.get("mcp_servers", {})))
         elif client_id == "opencode":
             config = _read_json_config(_opencode_config_path())
             mcp = config.get("mcp", {})
@@ -1511,7 +1507,9 @@ def _setup_json() -> None:
         if copy_to_clipboard(json_str):
             console.print("[green]✓[/green] Copied to clipboard")
         else:
-            console.print("[yellow]Warning:[/yellow] Could not copy to clipboard (no clipboard utility available)")
+            console.print(
+                "[yellow]Warning:[/yellow] Could not copy to clipboard (no clipboard utility available)"
+            )
 
 
 # =============================================================================
@@ -1527,9 +1525,6 @@ def setup_callback(ctx: typer.Context) -> None:
     from notebooklm_tools.cli.commands.setup_wizard import run_setup_wizard
 
     raise typer.Exit(run_setup_wizard())
-
-
-
 
 
 @app.command("add")
@@ -1718,27 +1713,29 @@ def _remove_single(client: str, profile: str | None = None, scope: str = "projec
 
     # Client-specific removal via CLI (preferred)
     if client == "claude-code":
+        config_path = Path.home() / ".claude.json"
+        config = _read_json_config(config_path)
+        names = _configured_mcp_names(config.get("mcpServers", {}))
+        if not names:
+            console.print("[dim]Gemini Notebook MCP was not configured in Claude Code.[/dim]")
+            return False
+
         claude_cmd = shutil.which("claude")
         if claude_cmd:
             try:
-                result = subprocess.run(
-                    [claude_cmd, "mcp", "remove", "-s", "user", MCP_SERVER_NAME],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-                removed = result.returncode == 0
-                last_error = result.stderr.strip()
-                for legacy_name in LEGACY_MCP_SERVER_NAMES:
-                    legacy_result = subprocess.run(
-                        [claude_cmd, "mcp", "remove", "-s", "user", legacy_name],
+                backup_existing(config_path, label="claude-code-config")
+                removed = False
+                last_error = ""
+                for name in names:
+                    result = subprocess.run(
+                        [claude_cmd, "mcp", "remove", "-s", "user", name],
                         capture_output=True,
                         text=True,
                         timeout=10,
                     )
-                    removed = legacy_result.returncode == 0 or removed
-                    if legacy_result.stderr.strip():
-                        last_error = legacy_result.stderr.strip()
+                    removed = result.returncode == 0 or removed
+                    if result.stderr.strip():
+                        last_error = result.stderr.strip()
                 if removed:
                     console.print("[green]✓[/green] Removed from Claude Code")
                     return True
@@ -1749,54 +1746,32 @@ def _remove_single(client: str, profile: str | None = None, scope: str = "projec
                 console.print(f"[yellow]Warning:[/yellow] Could not run claude command: {e}")
                 return False
         else:
-            console.print("[yellow]Warning:[/yellow] 'claude' command not found")
-            return False
+            _remove_mcp_entries(config["mcpServers"])
+            _write_json_config(config_path, config)
+            console.print("[green]✓[/green] Removed from Claude Code configuration")
+            return True
 
     # Removal for Codex CLI / ChatGPT desktop
     if client == "codex":
-        config_dir = _codex_config_path()
-        config_path = config_dir / "config.toml"
-        codex_cmd = shutil.which("codex")
-
-        removed = False
-        if codex_cmd:
-            if config_path.exists():
-                backup_existing(config_path, label="codex-config")
-            try:
-                result = subprocess.run(
-                    [codex_cmd, "mcp", "remove", MCP_SERVER_NAME],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-                removed = result.returncode == 0
-                for legacy_name in LEGACY_MCP_SERVER_NAMES:
-                    legacy_result = subprocess.run(
-                        [codex_cmd, "mcp", "remove", legacy_name],
-                        capture_output=True,
-                        text=True,
-                        timeout=10,
-                    )
-                    removed = legacy_result.returncode == 0 or removed
-            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-                pass
-
-        if config_path.exists():
-            try:
-                toml_configured = _is_already_configured("codex")
-                if toml_configured:
-                    _edit_codex_entry(config_path, remove=True)
-                    removed = True
-            except Exception:
-                pass
-
-        if removed:
-            console.print("[green]✓[/green] Removed from Codex CLI / ChatGPT desktop")
-            return True
-        else:
-            console.print("[dim]Gemini Notebook MCP was not configured in Codex / ChatGPT desktop.[/dim]")
+        config_path = _codex_config_path() / "config.toml"
+        if not config_path.exists():
+            console.print(
+                "[dim]Gemini Notebook MCP was not configured in Codex / ChatGPT desktop.[/dim]"
+            )
             return False
-
+        try:
+            config = tomlkit.parse(config_path.read_text(encoding="utf-8"))
+            if not _configured_mcp_names(config.get("mcp_servers", {})):
+                console.print(
+                    "[dim]Gemini Notebook MCP was not configured in Codex / ChatGPT desktop.[/dim]"
+                )
+                return False
+            _edit_codex_entry(config_path, remove=True)
+        except (OSError, ValueError) as exc:
+            console.print(f"[red]Could not remove Codex MCP entry:[/red] {exc}")
+            return False
+        console.print("[green]✓[/green] Removed from Codex CLI / ChatGPT desktop")
+        return True
 
     # OpenCode uses "mcp" key, not "mcpServers"
     if client == "opencode":
@@ -1851,7 +1826,9 @@ def _remove_single(client: str, profile: str | None = None, scope: str = "projec
             console.print(f"[green]✓[/green] Removed from GitHub Copilot ({scope})")
             return True
 
-        console.print(f"[dim]Gemini Notebook MCP was not configured in GitHub Copilot ({scope}).[/dim]")
+        console.print(
+            f"[dim]Gemini Notebook MCP was not configured in GitHub Copilot ({scope}).[/dim]"
+        )
         return False
 
     # JSON config-based clients
@@ -1953,23 +1930,13 @@ def setup_list() -> None:
         config_path = ""
 
         if client_id == "claude-code":
-            # Check via claude command
-            claude_cmd = shutil.which("claude")
-            if claude_cmd:
-                try:
-                    result = subprocess.run(
-                        [claude_cmd, "mcp", "list"],
-                        capture_output=True,
-                        text=True,
-                        timeout=5,
-                    )
-                    if _cli_output_contains_mcp(result.stdout):
-                        status = "[green]✓[/green]"
-                except (subprocess.TimeoutExpired, OSError):
-                    status = "[dim]?[/dim]"
-                config_path = "claude mcp list"
-            else:
-                config_path = "not installed"
+            path = Path.home() / ".claude.json"
+            try:
+                if _is_configured(_read_json_config(path)):
+                    status = "[green]✓[/green]"
+            except (OSError, ConfigParseError):
+                status = "[dim]?[/dim]"
+            config_path = str(path).replace(str(Path.home()), "~")
 
         elif client_id == "claude-desktop":
             profile_paths = _claude_desktop_profile_paths()
@@ -2010,11 +1977,34 @@ def setup_list() -> None:
             config_path = str(path).replace(str(Path.home()), "~")
 
         elif client_id == "github-copilot":
-            path = _github_copilot_config_path()
-            config = _read_json_config(path)
-            if _is_vscode_mcp_configured(config):
-                status = "[green]✓[/green]"
-            config_path = str(path)
+            found = False
+            for scope, label in (("user", "user profile"), ("project", "workspace")):
+                path = _github_copilot_config_path(scope)
+                if path is None:
+                    continue
+                try:
+                    configured = _is_copilot_configured(scope)
+                except (OSError, ConfigParseError):
+                    configured = False
+                if configured:
+                    table.add_row(
+                        f"{info['name']} ({label})",
+                        str(info["description"]),
+                        "[green]✓[/green]",
+                        str(path).replace(str(Path.home()), "~"),
+                    )
+                    found = True
+            if not found:
+                user_path = _github_copilot_config_path("user")
+                table.add_row(
+                    str(info["name"]),
+                    str(info["description"]),
+                    "[dim]-[/dim]",
+                    str(user_path).replace(str(Path.home()), "~")
+                    if user_path
+                    else "user profile unavailable",
+                )
+            continue
 
         elif client_id == "cursor":
             path = _cursor_config_path()
@@ -2045,22 +2035,13 @@ def setup_list() -> None:
             config_path = str(path).replace(str(Path.home()), "~")
 
         elif client_id == "codex":
-            codex_cmd = shutil.which("codex")
-            if codex_cmd:
-                try:
-                    result = subprocess.run(
-                        [codex_cmd, "mcp", "list"],
-                        capture_output=True,
-                        text=True,
-                        timeout=5,
-                    )
-                    if _cli_output_contains_mcp(result.stdout):
-                        status = "[green]✓[/green]"
-                except (subprocess.TimeoutExpired, OSError):
-                    status = "[dim]?[/dim]"
-                config_path = "codex mcp list"
-            else:
-                config_path = "not installed"
+            path = _codex_config_path() / "config.toml"
+            try:
+                if _is_already_configured("codex"):
+                    status = "[green]✓[/green]"
+            except (OSError, tomllib.TOMLDecodeError):
+                status = "[dim]?[/dim]"
+            config_path = str(path).replace(str(Path.home()), "~")
 
         elif client_id == "opencode":
             path = _opencode_config_path()

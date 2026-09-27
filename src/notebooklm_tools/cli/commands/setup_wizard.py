@@ -1,14 +1,12 @@
 """Interactive setup wizard for adding and removing Gemini Notebook MCP and skills."""
 
-import json
-import os
 import platform
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import questionary
 from rich.table import Table
@@ -64,7 +62,11 @@ def copy_to_clipboard(value: str) -> bool:
             return res.returncode == 0
         else:
             # Linux: try wl-copy, then xclip, then xsel
-            for cmd in (["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]):
+            for cmd in (
+                ["wl-copy"],
+                ["xclip", "-selection", "clipboard"],
+                ["xsel", "--clipboard", "--input"],
+            ):
                 if shutil.which(cmd[0]):
                     res = subprocess.run(cmd, input=value.encode("utf-8"), check=False, timeout=5)
                     if res.returncode == 0:
@@ -195,16 +197,36 @@ def run_add(selected: list[str]) -> list[SetupResult]:
             continue
 
         configured = False
-        with capture_backups() as recorded:
-            try:
-                configured = add_one_mcp(client, repair=bool(target and target.repair_reason is not None))
+        recorded: list[Path] = []
+        try:
+            with capture_backups() as recorded:
+                configured = add_one_mcp(
+                    client, repair=bool(target and target.repair_reason is not None)
+                )
                 status = "configured" if configured else "failed"
                 message = "Configured" if configured else "Setup failed"
-            except (OSError, ConfigParseError, ValueError) as exc:
-                status, message = "failed", str(exc)
+        except KeyboardInterrupt:
+            results.append(
+                SetupResult(
+                    client, "partial", dest, tuple(recorded), "Interrupted; inspect this target"
+                )
+            )
+            _display_results_summary("MCP Setup Results (partial)", results)
+            raise
+        except (OSError, ConfigParseError, ValueError) as exc:
+            status, message = "failed", str(exc)
 
-        if not configured and client == "codex" and target and not target.configured and setup._is_already_configured("codex"):
-            status, message = "partial", "Codex entry exists, but timeout setup failed; inspect backup"
+        if (
+            not configured
+            and client == "codex"
+            and target
+            and not target.configured
+            and setup._is_already_configured("codex")
+        ):
+            status, message = (
+                "partial",
+                "Codex entry exists, but timeout setup failed; inspect backup",
+            )
 
         results.append(SetupResult(client, status, dest, tuple(recorded), message))
 
@@ -243,6 +265,9 @@ def _display_results_summary(title: str, results: list[SetupResult]) -> None:
 
     console.print()
     console.print(table)
+    for res in results:
+        for backup_path in res.backup_paths:
+            console.print(f"Backup for {res.id}: {backup_path}", markup=False, soft_wrap=True)
 
 
 def run_setup_wizard() -> int:
@@ -294,18 +319,24 @@ def _flow_add() -> int:
     detected = [t for t in targets if t.installed]
 
     if not detected:
-        console.print("[yellow]No supported AI tools detected on your system.[/yellow]")
-        console.print("Use 'Get JSON for another tool' to configure custom tools.")
-        return 0
+        console.print("[yellow]No supported MCP clients detected on your system.[/yellow]")
+        console.print("You can still install the skill for a detected skill-capable tool.")
+        return 0 if _flow_skill_offer([]) else 130
 
     # Build questionary checkbox choices
-    choices = []
+    choices = [questionary.Choice(title="Select all detected", value="__all__")]
     for t in detected:
         status_tag = " (already configured)" if t.configured else " (detected)"
         if t.repair_reason:
             status_tag = f" (needs repair: {t.repair_reason})"
         dest_tag = f" — {t.destination}" if t.destination else ""
-        choices.append(questionary.Choice(title=f"{t.label}{status_tag}{dest_tag}", value=t.id, checked=not t.configured or bool(t.repair_reason)))
+        choices.append(
+            questionary.Choice(
+                title=f"{t.label}{status_tag}{dest_tag}",
+                value=t.id,
+                checked=not t.configured or bool(t.repair_reason),
+            )
+        )
 
     selected = questionary.checkbox(
         "Select tools to configure for Gemini Notebook MCP:",
@@ -318,27 +349,30 @@ def _flow_add() -> int:
 
     if not selected:
         console.print("[dim]No tools selected.[/dim]")
-        return 0
+        return 0 if _flow_skill_offer([]) else 130
+
+    if "__all__" in selected:
+        selected = [target.id for target in detected]
 
     results = run_add(selected)
     _display_results_summary("MCP Setup Results", results)
 
     # Offer optional skill
-    configured_targets = [r for r in results if r.status in ("configured", "already", "repaired")]
-    if configured_targets:
-        _flow_skill_offer(selected)
-
-    return 0
+    return 0 if _flow_skill_offer(selected) else 130
 
 
-def _flow_skill_offer(selected_mcp_ids: list[str]) -> None:
+def _flow_skill_offer(selected_mcp_ids: list[str]) -> bool:
     """Offer optional skill installation after MCP setup."""
     console.print("\n[bold]Optional: Install NotebookLM Skill[/bold]")
     console.print("Provides prompt instructions, reference docs, and workflows to AI agents.\n")
 
-    want_skill = questionary.confirm("Would you like to install the NotebookLM skill?", default=True).ask()
+    want_skill = questionary.confirm(
+        "Would you like to install the NotebookLM skill?", default=True
+    ).ask()
+    if want_skill is None:
+        return False
     if not want_skill:
-        return
+        return True
 
     level_choice = questionary.select(
         "Installation scope:",
@@ -349,7 +383,7 @@ def _flow_skill_offer(selected_mcp_ids: list[str]) -> None:
     ).ask()
 
     if level_choice is None:
-        return
+        return False
 
     level = "user" if "user" in level_choice else "project"
 
@@ -366,31 +400,73 @@ def _flow_skill_offer(selected_mcp_ids: list[str]) -> None:
         ("openclaw", "OpenClaw framework", ["openclaw"]),
     ]
 
-    skill_choices = []
+    skill_choices = [
+        questionary.Choice(title="Select all detected skill-capable tools", value="__all__")
+    ]
+    seen_destinations: set[Path] = set()
     for tool_key, label, mcp_keys in tool_options:
         dest = skill.get_skill_destination(tool_key, level)
-        if not dest:
+        if not dest or dest in seen_destinations:
             continue
-        is_installed = any(setup._detect_tool(k) for k in mcp_keys) or skill._is_tool_installed(tool_key)
+        is_installed = any(setup._detect_tool(k) for k in mcp_keys) or skill._is_tool_installed(
+            tool_key
+        )
         if is_installed:
+            seen_destinations.add(dest)
             prechecked = any(k in selected_mcp_ids for k in mcp_keys)
-            skill_choices.append(questionary.Choice(title=f"{label} ({dest})", value=tool_key, checked=prechecked))
+            skill_choices.append(
+                questionary.Choice(title=f"{label} ({dest})", value=tool_key, checked=prechecked)
+            )
 
-    if not skill_choices:
+    if len(skill_choices) == 1:
         console.print("[dim]No detected tools support local skill files.[/dim]")
-        return
+        return True
 
-    chosen_skills = questionary.checkbox("Install skill for which tools?", choices=skill_choices).ask()
+    chosen_skills = questionary.checkbox(
+        "Install skill for which tools?", choices=skill_choices
+    ).ask()
+    if chosen_skills is None:
+        return False
     if not chosen_skills:
-        return
+        return True
+    if "__all__" in chosen_skills:
+        chosen_skills = [choice.value for choice in skill_choices if choice.value != "__all__"]
 
     skill_results = []
     for sk in chosen_skills:
-        outcome = skill.skill_action(sk, level, "install", confirm_replace=lambda msg: questionary.confirm(msg, default=True).ask())
+        recorded: list[Path] = []
+        try:
+            with capture_backups() as recorded:
+                outcome = skill.skill_action(
+                    sk, level, "install", confirm_replace=_confirm_skill_replace
+                )
+        except KeyboardInterrupt:
+            skill_results.append(
+                SetupResult(
+                    sk,
+                    "partial",
+                    skill.get_skill_destination(sk, level),
+                    tuple(recorded),
+                    "Interrupted; inspect this skill",
+                )
+            )
+            _display_results_summary("Skill Setup Results (partial)", skill_results)
+            raise
         backups = (outcome.backup_path,) if outcome.backup_path else ()
-        skill_results.append(SetupResult(sk, outcome.status, outcome.path, backups, outcome.message))
+        skill_results.append(
+            SetupResult(sk, outcome.status, outcome.path, backups, outcome.message)
+        )
 
     _display_results_summary("Skill Setup Results", skill_results)
+    return True
+
+
+def _confirm_skill_replace(message: str) -> bool:
+    """Require an explicit yes before replacing an installed skill."""
+    answer = questionary.confirm(message, default=False).ask()
+    if answer is None:
+        raise KeyboardInterrupt
+    return answer
 
 
 def _flow_json() -> int:
@@ -504,22 +580,25 @@ def scan_removable() -> list[SetupTarget]:
 
     # 6. Skills (user and project scopes; exclude alef-agent)
     skill_tools = [
-        ("agents", "nlm-skill (shared: Codex, ChatGPT, Gemini, Antigravity)"),
-        ("claude-code", "nlm-skill (Claude Code)"),
-        ("cursor", "nlm-skill (Cursor)"),
-        ("opencode", "nlm-skill (OpenCode)"),
+        "agents",
+        *(tool for tool in skill.TOOL_CONFIGS if tool not in {"agents", "alef-agent", "other"}),
     ]
     seen_destinations: set[Path] = set()
-    for tool_name, desc_prefix in skill_tools:
+    for tool_name in skill_tools:
         for level in ("user", "project"):
             try:
                 installed, path = skill.check_install_status(tool_name, level)
                 if installed and path and path not in seen_destinations:
                     seen_destinations.add(path)
+                    label = (
+                        "nlm-skill (shared: Codex, ChatGPT, Gemini, Antigravity)"
+                        if tool_name == "agents"
+                        else f"nlm-skill ({tool_name.replace('-', ' ').title()})"
+                    )
                     targets.append(
                         SetupTarget(
                             id=f"skill:{tool_name}:{level}",
-                            label=f"{desc_prefix} [{level}]",
+                            label=f"{label} [{level}]",
                             installed=True,
                             configured=True,
                             destination=path,
@@ -532,35 +611,75 @@ def scan_removable() -> list[SetupTarget]:
     return targets
 
 
-def remove_mcp_targets(targets: list[SetupTarget]) -> list[SetupResult]:
+def remove_mcp_targets(
+    targets: list[SetupTarget], on_result: Callable[[SetupResult], None] | None = None
+) -> list[SetupResult]:
     """Safely remove selected MCP targets with backups and error isolation."""
     results = []
     for target in targets:
         client, _, profile = target.id.partition(":")
-        with capture_backups() as recorded:
-            try:
-                scope = profile if profile in ("user", "project") else ("user" if client == "github-copilot" else "project")
+        recorded: list[Path] = []
+        try:
+            with capture_backups() as recorded:
+                scope = (
+                    profile
+                    if profile in ("user", "project")
+                    else ("user" if client == "github-copilot" else "project")
+                )
                 prof = profile if profile not in ("user", "project") else None
                 removed = setup._remove_single(
                     client,
                     profile=prof,
                     scope=scope,
                 )
-                status, message = ("removed", "Removed") if removed else ("failed", "Removal failed")
-            except (OSError, ConfigParseError, ValueError) as exc:
-                status, message = "failed", str(exc)
-        results.append(SetupResult(target.id, status, target.destination, tuple(recorded), message))
+                status, message = (
+                    ("removed", "Removed") if removed else ("failed", "Removal failed")
+                )
+        except KeyboardInterrupt:
+            partial = SetupResult(
+                target.id,
+                "partial",
+                target.destination,
+                tuple(recorded),
+                "Interrupted; inspect this target",
+            )
+            results.append(partial)
+            if on_result:
+                on_result(partial)
+            raise
+        except (OSError, ConfigParseError, ValueError) as exc:
+            status, message = "failed", str(exc)
+        result = SetupResult(target.id, status, target.destination, tuple(recorded), message)
+        results.append(result)
+        if on_result:
+            on_result(result)
     return results
 
 
-def remove_skill_targets(targets: list[SetupTarget]) -> list[SetupResult]:
+def remove_skill_targets(
+    targets: list[SetupTarget], on_result: Callable[[SetupResult], None] | None = None
+) -> list[SetupResult]:
     """Safely remove selected skill targets with directory backups."""
     results = []
     for target in targets:
         _, tool, level = target.id.split(":", 2)
-        outcome = skill.skill_action(tool, level, "remove", confirm_replace=lambda _: True)
+        try:
+            outcome = skill.skill_action(tool, level, "remove", confirm_replace=lambda _: True)
+        except KeyboardInterrupt:
+            partial = SetupResult(
+                target.id, "partial", target.destination, (), "Interrupted; inspect this skill"
+            )
+            results.append(partial)
+            if on_result:
+                on_result(partial)
+            raise
         backups = (outcome.backup_path,) if outcome.backup_path else ()
-        results.append(SetupResult(target.id, outcome.status, target.destination, backups, outcome.message))
+        result = SetupResult(
+            target.id, outcome.status, target.destination, backups, outcome.message
+        )
+        results.append(result)
+        if on_result:
+            on_result(result)
     return results
 
 
@@ -572,18 +691,36 @@ def skipped(targets: list[SetupTarget]) -> list[SetupResult]:
 def run_remove(selected: list[str]) -> list[SetupResult]:
     """Run removal on selected target IDs with two-stage confirmation."""
     all_removable = {t.id: t for t in scan_removable()}
-    mcp_targets = [all_removable[i] for i in selected if i in all_removable and not i.startswith("skill:")]
-    skill_targets = [all_removable[i] for i in selected if i in all_removable and i.startswith("skill:")]
+    mcp_targets = [
+        all_removable[i] for i in selected if i in all_removable and not i.startswith("skill:")
+    ]
+    skill_targets = [
+        all_removable[i] for i in selected if i in all_removable and i.startswith("skill:")
+    ]
     results = []
-    if mcp_targets:
-        allowed = questionary.confirm("Remove the selected MCP entries?", default=False).ask()
-        results.extend(remove_mcp_targets(mcp_targets) if allowed else skipped(mcp_targets))
-    if skill_targets:
-        allowed = questionary.confirm(
-            "Delete the listed skill folders? Personal edits in the active folders will be removed.",
-            default=False,
-        ).ask()
-        results.extend(remove_skill_targets(skill_targets) if allowed else skipped(skill_targets))
+    try:
+        if mcp_targets:
+            allowed = questionary.confirm("Remove the selected MCP entries?", default=False).ask()
+            if allowed is None:
+                raise KeyboardInterrupt
+            if allowed:
+                remove_mcp_targets(mcp_targets, on_result=results.append)
+            else:
+                results.extend(skipped(mcp_targets))
+        if skill_targets:
+            allowed = questionary.confirm(
+                "Delete the listed skill folders? Personal edits in the active folders will be removed.",
+                default=False,
+            ).ask()
+            if allowed is None:
+                raise KeyboardInterrupt
+            if allowed:
+                remove_skill_targets(skill_targets, on_result=results.append)
+            else:
+                results.extend(skipped(skill_targets))
+    except KeyboardInterrupt:
+        _display_results_summary("Removal Results (partial)", results)
+        raise
     return results
 
 
@@ -594,10 +731,10 @@ def _flow_remove() -> int:
         console.print("[dim]No Gemini Notebook MCP entries or skills found to remove.[/dim]")
         return 0
 
-    choices = ["Select all found"]
+    choices = [questionary.Choice(title="Select all found", value="__all__")]
     for t in targets:
         dest_str = str(t.destination).replace(str(Path.home()), "~") if t.destination else ""
-        choices.append(f"{t.label} ({dest_str})")
+        choices.append(questionary.Choice(title=f"{t.label} ({dest_str})", value=t.id))
 
     try:
         selected_labels = questionary.checkbox(
@@ -611,15 +748,11 @@ def _flow_remove() -> int:
             console.print("[dim]No items selected for removal.[/dim]")
             return 0
 
-        if "Select all found" in selected_labels:
+        if "__all__" in selected_labels:
             selected_ids = [t.id for t in targets]
         else:
-            selected_ids = []
-            for t in targets:
-                dest_str = str(t.destination).replace(str(Path.home()), "~") if t.destination else ""
-                expected_opt = f"{t.label} ({dest_str})"
-                if expected_opt in selected_labels or any(t.label in sel for sel in selected_labels):
-                    selected_ids.append(t.id)
+            known_ids = {target.id for target in targets}
+            selected_ids = [target_id for target_id in selected_labels if target_id in known_ids]
 
         results = run_remove(selected_ids)
         _display_results_summary("Removal Results", results)

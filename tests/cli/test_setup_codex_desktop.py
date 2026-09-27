@@ -1,6 +1,5 @@
 """Tests for shared Codex CLI and ChatGPT Desktop configuration."""
 
-import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -36,8 +35,12 @@ def test_detect_chatgpt_desktop_macos(tmp_path, monkeypatch):
 
 
 def test_detect_chatgpt_desktop_not_installed(tmp_path, monkeypatch):
-    monkeypatch.setattr(setup, "_chatgpt_desktop_candidate_paths", lambda: [tmp_path / "Nonexistent.app"])
-    monkeypatch.setattr(setup.shutil, "which", lambda cmd: None if cmd == "chatgpt" else "/bin/something")
+    monkeypatch.setattr(
+        setup, "_chatgpt_desktop_candidate_paths", lambda: [tmp_path / "Nonexistent.app"]
+    )
+    monkeypatch.setattr(
+        setup.shutil, "which", lambda cmd: None if cmd == "chatgpt" else "/bin/something"
+    )
     assert setup._detect_chatgpt_desktop() is False
 
 
@@ -55,7 +58,9 @@ def test_codex_cli_add_uses_absolute_server_path(tmp_path, monkeypatch):
     monkeypatch.setattr(
         setup.subprocess,
         "run",
-        lambda args, **kw: calls.append(args) or SimpleNamespace(returncode=0, stdout="", stderr=""),
+        lambda args, **kw: (
+            calls.append(args) or SimpleNamespace(returncode=0, stdout="", stderr="")
+        ),
     )
     codex_dir = tmp_path / ".codex"
     monkeypatch.setattr(setup, "_codex_config_path", lambda: codex_dir)
@@ -63,7 +68,14 @@ def test_codex_cli_add_uses_absolute_server_path(tmp_path, monkeypatch):
     assert setup._setup_codex() is True
     assert len(calls) > 0
     # First argument list should be codex mcp add with absolute server binary
-    assert calls[0] == ["/usr/local/bin/codex", "mcp", "add", setup.MCP_SERVER_NAME, "--", binary_path]
+    assert calls[0] == [
+        "/usr/local/bin/codex",
+        "mcp",
+        "add",
+        setup.MCP_SERVER_NAME,
+        "--",
+        binary_path,
+    ]
 
     # Verify TOML updated with tool_timeout_sec = 300
     config_file = codex_dir / "config.toml"
@@ -213,3 +225,78 @@ def test_codex_malformed_toml_fails_closed(tmp_path, monkeypatch):
     with pytest.raises(ConfigParseError):
         setup._edit_codex_entry(config_file, command="/bin/test")
     assert config_file.read_text(encoding="utf-8") == bad_toml
+
+
+def test_codex_removal_preserves_unrelated_legacy_named_server(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(
+        '[mcp_servers.notebooklm]\ncommand = "unrelated-tool"\n\n'
+        '[mcp_servers.gemini-notebook-mcp]\ncommand = "/bin/notebooklm-mcp"\n'
+    )
+
+    setup._edit_codex_entry(config_file, remove=True)
+
+    servers = tomlkit.parse(config_file.read_text())["mcp_servers"]
+    assert "gemini-notebook-mcp" not in servers
+    assert servers["notebooklm"]["command"] == "unrelated-tool"
+
+
+def test_codex_add_preserves_unrelated_legacy_named_server(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    config_file = tmp_path / "config.toml"
+    config_file.write_text('[mcp_servers.notebooklm]\ncommand = "unrelated-tool"\n')
+
+    setup._edit_codex_entry(config_file, command="/bin/notebooklm-mcp")
+
+    servers = tomlkit.parse(config_file.read_text())["mcp_servers"]
+    assert servers["notebooklm"]["command"] == "unrelated-tool"
+    assert servers["gemini-notebook-mcp"]["command"] == "/bin/notebooklm-mcp"
+
+
+def test_codex_status_ignores_unrelated_legacy_named_server(tmp_path, monkeypatch):
+    config_dir = tmp_path / ".codex"
+    config_dir.mkdir()
+    (config_dir / "config.toml").write_text(
+        '[mcp_servers.notebooklm]\ncommand = "unrelated-tool"\n'
+    )
+    monkeypatch.setattr(setup, "_codex_config_path", lambda: config_dir)
+    monkeypatch.setattr(
+        setup.shutil, "which", lambda name: "/bin/codex" if name == "codex" else None
+    )
+    monkeypatch.setattr(
+        setup.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0, stdout="notebooklm: unrelated-tool", stderr=""
+        ),
+    )
+
+    assert setup._is_already_configured("codex") is False
+
+
+def test_codex_remove_does_not_delegate_legacy_names_to_cli(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    config_dir = tmp_path / ".codex"
+    config_dir.mkdir()
+    config_file = config_dir / "config.toml"
+    config_file.write_text(
+        '[mcp_servers.notebooklm]\ncommand = "unrelated-tool"\n\n'
+        '[mcp_servers.gemini-notebook-mcp]\ncommand = "/bin/notebooklm-mcp"\n'
+    )
+    monkeypatch.setattr(setup, "_codex_config_path", lambda: config_dir)
+    monkeypatch.setattr(
+        setup.shutil, "which", lambda name: "/bin/codex" if name == "codex" else None
+    )
+    monkeypatch.setattr(
+        setup.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail(
+            "Codex removal should edit only the recognized user config entry"
+        ),
+    )
+
+    assert setup._remove_single("codex") is True
+    servers = tomlkit.parse(config_file.read_text())["mcp_servers"]
+    assert "gemini-notebook-mcp" not in servers
+    assert servers["notebooklm"]["command"] == "unrelated-tool"
