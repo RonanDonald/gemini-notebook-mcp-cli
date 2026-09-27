@@ -286,9 +286,35 @@ def _opencode_config_path() -> Path:
     return Path.home() / ".config" / "opencode" / "opencode.json"
 
 
-def _github_copilot_config_path() -> Path:
-    """Get GitHub Copilot workspace MCP config path."""
-    return Path(".vscode") / "mcp.json"
+def _github_copilot_config_path(scope: str = "project") -> Path | None:
+    """Get GitHub Copilot workspace or user profile MCP config path."""
+    if scope == "project":
+        return Path(".vscode") / "mcp.json"
+    elif scope == "user":
+        system = platform.system()
+        if system == "Darwin":
+            return Path.home() / "Library" / "Application Support" / "Code" / "User" / "mcp.json"
+        elif system == "Windows":
+            appdata = os.environ.get("APPDATA")
+            if not appdata:
+                return None
+            return Path(appdata) / "Code" / "User" / "mcp.json"
+        else:
+            config_dir = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+            return config_dir / "Code" / "User" / "mcp.json"
+    return None
+
+
+def _is_copilot_configured(scope: str = "project") -> bool:
+    """Check if GitHub Copilot has Gemini Notebook MCP configured in the given scope."""
+    config_path = _github_copilot_config_path(scope)
+    if not config_path or not config_path.exists():
+        return False
+    try:
+        config = _read_json_config(config_path)
+        return _is_vscode_mcp_configured(config)
+    except Exception:
+        return False
 
 
 def _claude_desktop_msix_package_dir() -> Path | None:
@@ -817,10 +843,87 @@ def _setup_gemini() -> bool:
     return True
 
 
-def _setup_github_copilot() -> bool:
-    """Add MCP to GitHub Copilot's workspace MCP config."""
-    config_path = _github_copilot_config_path()
-    config = _read_json_config(config_path)
+def _setup_github_copilot(scope: str = "project") -> bool:
+    """Add MCP to GitHub Copilot's workspace or user profile MCP config."""
+    if scope not in ("project", "user"):
+        console.print(f"[red]Error:[/red] Invalid scope '{scope}'. Must be 'project' or 'user'.")
+        return False
+
+    config_path = _github_copilot_config_path(scope)
+    if config_path is None:
+        console.print("[yellow]Warning:[/yellow] Could not locate VS Code user profile mcp.json.")
+        return False
+
+    if scope == "user":
+        binary_path = _find_mcp_server_path()
+        if not binary_path:
+            console.print("[red]notebooklm-mcp is not installed in PATH[/red]")
+            return False
+
+        if config_path.exists() and _is_copilot_configured(scope="user"):
+            console.print("[green]✓[/green] Already configured in GitHub Copilot (user)")
+            return True
+
+        code_cmd = shutil.which("code")
+        if code_cmd:
+            if config_path.exists():
+                backup_existing(config_path, label="copilot-config")
+            try:
+                payload = json.dumps({
+                    "name": MCP_SERVER_NAME,
+                    "command": binary_path,
+                    "args": [],
+                })
+                result = subprocess.run(
+                    [code_cmd, "--add-mcp", payload],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode == 0:
+                    console.print("[green]✓[/green] Added to GitHub Copilot (user)")
+                    console.print(f"  [dim]{config_path}[/dim]")
+                    return True
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                pass
+
+        if config_path.exists():
+            raw = config_path.read_text(encoding="utf-8")
+            try:
+                config = json.loads(raw)
+            except json.JSONDecodeError:
+                console.print(
+                    f"[yellow]Note:[/yellow] {config_path} contains comments or custom formatting; "
+                    "please configure via VS Code: 'code --add-mcp' or settings."
+                )
+                return False
+        else:
+            config = {}
+
+        migrated = _migrate_legacy_mcp_entry(config, "servers")
+        if _is_vscode_mcp_configured(config):
+            if migrated:
+                _write_json_config(config_path, config)
+                console.print(f"[green]✓[/green] Updated GitHub Copilot (user) to {MCP_SERVER_NAME}")
+            else:
+                console.print("[green]✓[/green] Already configured in GitHub Copilot (user)")
+            return True
+
+        _add_vscode_mcp_server(config, extra={"command": binary_path})
+        _write_json_config(config_path, config)
+        console.print("[green]✓[/green] Added to GitHub Copilot (user)")
+        console.print(f"  [dim]{config_path}[/dim]")
+        return True
+
+    # Project scope
+    if config_path.exists():
+        raw = config_path.read_text(encoding="utf-8")
+        try:
+            config = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ConfigParseError(config_path, exc) from exc
+    else:
+        config = {}
 
     migrated = _migrate_legacy_mcp_entry(config, "servers")
     if _is_vscode_mcp_configured(config):
@@ -1427,6 +1530,11 @@ def setup_add(
         "--profile",
         help="Claude Desktop profile: regular, 3p, or both",
     ),
+    scope: str | None = typer.Option(
+        None,
+        "--scope",
+        help="GitHub Copilot scope: user or project",
+    ),
 ) -> None:
     """
     Add Gemini Notebook MCP server to an AI tool.
@@ -1471,6 +1579,14 @@ def setup_add(
         console.print("[red]Error:[/red] --profile is only valid for claude-desktop")
         raise typer.Exit(1)
 
+    if scope is not None and client != "github-copilot":
+        console.print("[red]Error:[/red] --scope is only valid for github-copilot")
+        raise typer.Exit(1)
+
+    if scope is not None and scope not in ("user", "project"):
+        console.print("[red]Error:[/red] Invalid scope. Choose 'user' or 'project'.")
+        raise typer.Exit(1)
+
     info = CLIENT_REGISTRY[client]
     console.print(f"\n[bold]{info['name']}[/bold] — Adding Gemini Notebook MCP\n")
 
@@ -1485,7 +1601,7 @@ def setup_add(
         "claude-code": _setup_claude_code,
         "claude-desktop": _setup_claude_desktop,
         "gemini": _setup_gemini,
-        "github-copilot": _setup_github_copilot,
+        "github-copilot": lambda: _setup_github_copilot(scope=scope or "project"),
         "cursor": _setup_cursor,
         "windsurf": _setup_windsurf,
         "cline": _setup_cline,
@@ -1513,6 +1629,11 @@ def setup_remove(
         None,
         "--profile",
         help="Claude Desktop profile: regular, 3p, or both",
+    ),
+    scope: str | None = typer.Option(
+        None,
+        "--scope",
+        help="GitHub Copilot scope: user or project",
     ),
 ) -> None:
     """
@@ -1543,10 +1664,18 @@ def setup_remove(
         console.print("[red]Error:[/red] --profile is only valid for claude-desktop")
         raise typer.Exit(1)
 
-    _remove_single(client, profile=profile)
+    if scope is not None and client != "github-copilot":
+        console.print("[red]Error:[/red] --scope is only valid for github-copilot")
+        raise typer.Exit(1)
+
+    if scope is not None and scope not in ("user", "project"):
+        console.print("[red]Error:[/red] Invalid scope. Choose 'user' or 'project'.")
+        raise typer.Exit(1)
+
+    _remove_single(client, profile=profile, scope=scope or "project")
 
 
-def _remove_single(client: str, profile: str | None = None) -> bool:
+def _remove_single(client: str, profile: str | None = None, scope: str = "project") -> bool:
     """Remove MCP from a single client. Returns True if removed."""
     if client == "claude-desktop":
         selected = _select_claude_desktop_profile_paths(profile, configured_only=True)
@@ -1681,24 +1810,34 @@ def _remove_single(client: str, profile: str | None = None) -> bool:
             console.print("[dim]Gemini Notebook MCP was not configured in OpenCode.[/dim]")
             return False
 
-    # GitHub Copilot uses VS Code's ``servers`` key in .vscode/mcp.json
+    # GitHub Copilot uses VS Code's ``servers`` key
     if client == "github-copilot":
-        config_path = _github_copilot_config_path()
-        if not config_path.exists():
-            console.print("[dim]No config file found for GitHub Copilot.[/dim]")
+        config_path = _github_copilot_config_path(scope=scope)
+        if not config_path or not config_path.exists():
+            console.print(f"[dim]No config file found for GitHub Copilot ({scope}).[/dim]")
             return False
-        config = _read_json_config(config_path)
-        servers = config.get("servers", {})
 
+        raw = config_path.read_text(encoding="utf-8")
+        try:
+            config = json.loads(raw)
+        except json.JSONDecodeError:
+            console.print(
+                f"[yellow]Note:[/yellow] {config_path} contains comments or custom formatting; "
+                "cannot safely modify without losing comments."
+            )
+            console.print(f"Please remove '{MCP_SERVER_NAME}' manually from: {config_path}")
+            return False
+
+        servers = config.get("servers", {})
         removed = _remove_mcp_entries(servers)
 
         if removed:
             config["servers"] = servers
             _write_json_config(config_path, config)
-            console.print("[green]✓[/green] Removed from GitHub Copilot")
+            console.print(f"[green]✓[/green] Removed from GitHub Copilot ({scope})")
             return True
 
-        console.print("[dim]Gemini Notebook MCP was not configured in GitHub Copilot.[/dim]")
+        console.print(f"[dim]Gemini Notebook MCP was not configured in GitHub Copilot ({scope}).[/dim]")
         return False
 
     # JSON config-based clients
