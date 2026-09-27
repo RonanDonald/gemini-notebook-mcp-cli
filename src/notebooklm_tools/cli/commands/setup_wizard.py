@@ -17,6 +17,42 @@ from notebooklm_tools.cli.utils import make_console
 
 console = make_console()
 
+LEGEND_SELECT = "● = will do it   ○ = skip   (pre-ticked = recommended)"
+LEGEND_REMOVE = "● = will remove   ○ = keep"
+REASSURANCE_LINE = "Originals backed up in case you want to revert."
+
+
+@dataclass(frozen=True)
+class PickerRow:
+    """One row in a grouped questionary picker."""
+
+    group: str | None
+    label: str
+    value: str
+    checked: bool = False
+    disabled: str | None = None
+    note: str | None = None
+
+
+def rows_to_choices(rows: list[PickerRow]) -> list:
+    """Convert PickerRows into questionary Separators + Choices, grouped.
+
+    A separator is emitted once per non-empty group when the group name changes.
+    """
+    out: list = []
+    last_group: object = object()
+    for row in rows:
+        if row.group and row.group != last_group:
+            out.append(questionary.Separator(f"── {row.group} ──"))
+            last_group = row.group
+        title = f"{row.label}   {row.note}" if row.note else row.label
+        out.append(
+            questionary.Choice(
+                title=title, value=row.value, checked=row.checked, disabled=row.disabled
+            )
+        )
+    return out
+
 
 @dataclass(frozen=True)
 class SetupTarget:
