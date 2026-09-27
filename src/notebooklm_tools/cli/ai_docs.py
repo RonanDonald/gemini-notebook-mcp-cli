@@ -827,8 +827,12 @@ Checks: installation, authentication, browser profile, AI tool configs. Shows su
 ```bash
 nlm setup                               # Guided interactive setup wizard (recommended)
 nlm setup list                          # Show all clients and their MCP status
-nlm setup add claude-code               # Add to Claude Code (via claude mcp add)
-nlm setup add claude-desktop            # Add to Claude Desktop config
+nlm setup add claude-code               # Direct setup for Claude Code
+nlm setup add codex                     # Codex CLI and ChatGPT desktop app (shared config)
+nlm setup add chatgpt-desktop           # Alias for the shared Codex target
+nlm setup add github-copilot --scope user  # VS Code user profile
+nlm setup add github-copilot            # Current VS Code workspace
+nlm setup add claude-desktop            # Add to detected Claude Desktop profile(s)
 nlm setup add claude-desktop --profile 3p  # Select Relay AI / 3P explicitly
 nlm setup remove claude-desktop --profile regular  # Remove from regular explicitly
 nlm setup add gemini                    # Add to Gemini CLI config
@@ -850,14 +854,17 @@ names are recognized for migration and removal.
 Claude Desktop setup only targets detected regular or Relay AI/3P profiles and
 never creates a missing profile. Fully quit the selected profile before adding
 or removing configuration; the CLI refuses to write while its executable is
-running. User-level skill installation likewise requires the target tool to be
-detected; use `--level project` for an intentional project-local install.
+running. The wizard defaults MCP setup to app/user scope and the optional skill
+to all projects (user level), with the current folder available as a project
+scope. Codex CLI and the ChatGPT desktop app share one MCP config on the same
+host. GitHub Copilot uses the VS Code user profile in the wizard; its direct
+command without `--scope user` configures the current workspace.
 
 **Supported Clients:** claude-code, claude-desktop, gemini, cursor, windsurf, cline, antigravity, codex, github-copilot, opencode
 
-**Guided Removal & Recovery:** Run `nlm setup` and choose **Remove** to safely remove MCP configurations and skills with separate default-No confirmations. Before any modification, backups are saved to `~/.notebooklm-mcp-cli/backups/`. Files with JSONC comments are safely preserved and reported for manual removal.
+**Guided Removal & Recovery:** Run `nlm setup` and choose **Remove** to review and remove MCP configurations or skills with separate default-No confirmations. Before any modification, backups are saved to `~/.notebooklm-mcp-cli/backups/`. Files with JSONC comments are left unchanged and reported for manual removal.
 
-**For other tools:** `nlm setup add json` launches an interactive wizard — choose uvx or regular mode, full path or command name, and existing or new config. The JSON is printed with syntax highlighting and can be copied to clipboard.
+**For other tools:** Choose **Get JSON for another tool** in `nlm setup`, or run `nlm setup add json` directly. The generator offers uvx or regular mode, command name or full path, and entry-only or wrapped JSON. It prints the snippet and offers clipboard copy when available.
 
 ---
 

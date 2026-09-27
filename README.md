@@ -60,18 +60,19 @@ Run `nlm --ai` for comprehensive AI-assistant documentation.
 Connect AI assistants (Claude, Gemini, Cursor, etc.) to Gemini Notebook:
 
 ```bash
-# Automatic setup — picks the right config for each tool
-nlm setup add claude-code
-nlm setup add claude-desktop
-nlm setup add gemini
-nlm setup add github-copilot
-nlm setup add cursor
-nlm setup add cline
-nlm setup add antigravity
+# Recommended: choose tools in the guided setup wizard
+nlm setup
 
-# Generate JSON config for any other tool
+# Direct setup for a specific client
+nlm setup add codex             # Codex CLI and ChatGPT desktop app
+nlm setup add github-copilot --scope user
 nlm setup add json
 ```
+
+The wizard defaults MCP configuration to the app or user level. GitHub
+Copilot uses the VS Code user profile in the wizard; the direct Copilot command
+without `--scope user` targets the current workspace. The wizard can also
+install the optional skill globally (default) or in the current project.
 
 Then use natural language: _"Create a notebook about quantum computing and generate a podcast"_
 
@@ -96,7 +97,7 @@ Then use natural language: _"Create a notebook about quantum computing and gener
 | Cross-notebook query                          | `nlm cross query`               | `cross_notebook_query`               |
 | Pipelines (multi-step workflows)              | `nlm pipeline run/list`         | `pipeline`                           |
 | Tag & smart select                            | `nlm tag add/list/select`       | `tag`                                |
-| Configure AI tools                            | `nlm setup add/remove/list`     | —                                    |
+| Configure AI tools                            | `nlm setup` (wizard), `nlm setup add/remove/list` | —                          |
 | Install AI Skills                             | `nlm skill install/update`      | —                                    |
 | Diagnose issues                               | `nlm doctor`                    | —                                    |
 | Check remaining plan usage                    | `nlm usage [--profile <name>]`  | `usage_get`                          |
@@ -397,26 +398,27 @@ For detailed instructions and troubleshooting, see **[docs/AUTHENTICATION.md](do
 
 ### Automatic Setup (Recommended)
 
-Use `nlm setup` to automatically configure the MCP server for your AI tools — no manual JSON editing required:
+Run the guided wizard to detect installed tools and choose which MCPs to add,
+remove, or generate as JSON. Skill installation is optional:
 
 ```bash
-# Add to any supported tool
-nlm setup add claude-code
-nlm setup add claude-desktop
-nlm setup add claude-desktop --profile 3p  # Relay AI / Claude 3P
-nlm setup add gemini
-nlm setup add github-copilot
-nlm setup add cursor
-nlm setup add windsurf
+nlm setup
+```
 
-# Generate JSON config for any other tool
-nlm setup add json
+The wizard defaults MCP configuration to each app's user-level settings. It
+offers the skill at **All projects (user level)** by default, with
+**This folder (project level)** as an option. Codex CLI and the ChatGPT desktop
+app share one MCP configuration on the same host. GitHub Copilot uses the VS
+Code user profile in the wizard.
 
-# Check which tools are configured
-nlm setup list
+For direct setup or scripts, keep using the existing commands:
 
-# Diagnose installation & auth issues
-nlm doctor
+```bash
+nlm setup add codex                         # Codex CLI / ChatGPT desktop
+nlm setup add github-copilot --scope user   # VS Code user profile
+nlm setup add github-copilot                # Current workspace
+nlm setup add claude-desktop --profile 3p   # Relay AI / Claude 3P
+nlm setup list                              # Show MCP configuration status
 ```
 
 Claude Desktop setup only writes to profiles that are detected as present. If
@@ -436,7 +438,15 @@ the change. Reopen Claude Desktop after setup completes.
 
 ### Install AI Skills (Optional)
 
-Install the Gemini Notebook expert guide for your AI assistant to help it use the tools effectively. Supported for **Cline**, **Antigravity**, **OpenClaw**, **Codex**, **OpenCode**, **Claude Code**, and **Gemini CLI**.
+The wizard can install the prompting and workflow skill after MCP setup. It
+defaults to **All projects (user level)** and can instead install into the
+current project. Existing current or newer versions are preserved; older or
+unversioned skills require confirmation before replacement, with a backup made
+first.
+
+You can also manage skills directly. Supported local skill targets include
+**Cline**, **Antigravity**, **OpenClaw**, **Hermes**, **Codex**, **OpenCode**,
+**Claude Code**, and **Gemini CLI**.
 
 ```bash
 # Install skill files

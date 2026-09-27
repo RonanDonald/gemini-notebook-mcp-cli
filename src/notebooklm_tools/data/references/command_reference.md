@@ -1114,6 +1114,7 @@ MCP setup writes the configured server name `gemini-notebook-mcp`; the
 `notebooklm-mcp` executable remains unchanged for compatibility.
 
 ```bash
+nlm setup
 nlm setup list
 nlm setup add <tool>
 nlm setup remove <tool>
@@ -1137,9 +1138,14 @@ Relay AI/3P profiles exist, the command prompts for a selection unless
 `--profile` is supplied; if no profile exists, nothing is created. Fully quit
 the selected Claude profile before adding or removing MCP configuration. The
 CLI refuses to write while the active Claude executable is running, including
-when Relay AI launched it. User-level skill installation likewise requires
-the target tool to be detected; use `--level project` for an intentional
-project-local install.
+when Relay AI launched it. Bare `nlm setup` opens a wizard with Add, Remove,
+Get JSON, and Exit options. MCP configuration defaults to app/user scope;
+GitHub Copilot is configured in the VS Code user profile by the wizard. Its
+direct command defaults to the current project and accepts `--scope user` for
+the global profile. The optional skill defaults to **All projects (user level)**
+and can target **This folder (project level)**. Skill updates skip equal or
+newer versions and ask before replacing older or unversioned installs; existing
+skill directories are backed up before replacement or removal.
 
 Verb-first aliases are also available for common operations, including
 `nlm create`, `nlm list`, `nlm get`, `nlm add`, `nlm rename`, `nlm delete`,

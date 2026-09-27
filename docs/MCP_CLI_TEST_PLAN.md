@@ -1,11 +1,11 @@
 # Gemini Notebook (formerly Google NotebookLM) MCP - Comprehensive Test Plan
 
-**Purpose:** Verify all **43 MCP tools** work correctly.
+**Purpose:** Verify all **50 MCP tools** work correctly.
 
-**Version:** 2.6 (Updated 2026-08-03 - synchronized current MCP surface)
+**Version:** 2.7 (Updated 2026-09-27 - synchronized current MCP surface)
 
-**Changes from v2.4:**
-- Current tool count: 43 tools — added `chat_list`, `chat_get`, `chat_export` (list/view/export notebook chat sessions)
+**Changes from v2.6:**
+- Current tool count: 50 tools — includes interactive reports, usage, and the latest MCP additions.
 
 **Historical changes from v2.1:**
 - The test plan previously covered 39 tools, including consolidated notes, labels, async query, batch, pipeline, tags, and server_info.

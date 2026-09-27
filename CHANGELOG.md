@@ -5,7 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.12.1] - Unreleased
+## [0.13.0] - 2026-09-27
+
+### Added
+
+- **Guided setup wizard** — Running `nlm setup` now opens a menu to add MCPs, safely remove MCPs or skills, or generate JSON for another client. It detects installed tools, supports select-all, offers global-by-default skill installation with an optional project scope, and copies generated JSON to the clipboard when available.
+- **Codex desktop and global Copilot setup** — The wizard configures the shared Codex CLI / ChatGPT desktop MCP config and offers user-profile configuration for GitHub Copilot. Skill setup deduplicates shared locations and can install or upgrade the skill for detected tools.
+
+### Improved
+
+- **Setup recovery and preservation** — Existing MCP configs and skill folders are backed up before changes. Malformed configs fail closed, unrelated servers are preserved, and JSONC files are left untouched when they cannot be edited safely.
+- **Version-aware skill updates** — The setup wizard skips current or newer skill versions and asks before replacing older or unversioned installs.
 
 ### Fixed
 
@@ -14,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Build notebook links from the authenticated profile's host across notebook, Studio, and sharing outputs.
 - **Drive-imported files in Drive status ([#337](https://github.com/jacob-bd/gemini-notebook-mcp-cli/issues/337))** — Read type-14 Drive IDs so Drive-picker files appear in `source_list_drive` and are eligible for manual sync. Direct uploads without Drive metadata remain excluded; an eligible source can still fail a sync attempt.
 
-### Improved
+### Other improvements
 
 - Count queued artifacts separately in Studio status summaries. Queue position and ETA remain unavailable from the upstream response.
 - Guide MCP and CLI agents on profile selection, download readiness, path boundaries, report timeouts, and sharing errors.

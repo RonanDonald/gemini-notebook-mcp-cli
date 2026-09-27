@@ -1,6 +1,6 @@
 ---
 name: nlm-skill
-version: "0.12.1"
+version: "0.13.0"
 description: 'Expert guide for the Gemini Notebook (formerly Google NotebookLM) CLI (`nlm`) and MCP server - interfaces for Gemini Notebook. Use this skill when users want to interact with Gemini Notebook programmatically, including: creating/managing notebooks, checking plan usage and quota windows, adding sources (URLs, YouTube, text, Google Drive), generating content (podcasts, reports, interactive reports, quizzes, flashcards, mind maps, slides, infographics, videos, data tables), conducting research, chatting with sources, or automating Gemini Notebook workflows. Triggers on mentions of "nlm", "notebooklm", "Gemini Notebook", "plan usage", "quota", "podcast generation", "audio overview", "interactive report", "lesson report", "refactor document", "critique draft", or any Gemini Notebook-related automation task.'
 ---
 
@@ -794,8 +794,9 @@ Diagnose and fix issues with your Gemini Notebook installation, MCP server, and 
 
 ```bash
 nlm doctor                                   # Full diagnostic check
-nlm setup mcp                                # Show MCP server config JSON
-nlm setup add json                           # Interactive MCP config generator
+nlm setup                                    # Guided setup: Add, Remove, or Get JSON
+nlm setup list                               # Show MCP configuration status
+nlm setup add json                           # Generate JSON directly for another client
 nlm setup add claude-desktop                 # Setup detected Claude Desktop profile(s)
 nlm setup add claude-desktop --profile 3p    # Select Relay AI / Claude 3P
 nlm setup remove claude-desktop --profile 3p # Remove from Relay AI / Claude 3P
@@ -806,9 +807,12 @@ nlm setup remove cursor                      # Remove MCP from Cursor
 Claude Desktop setup never creates a missing profile. If both regular and
 Relay AI/3P profiles exist, select one with `--profile regular|3p|both` or
 answer the prompt. Fully quit the selected Claude profile before setup;
-the CLI refuses to write while its executable is running. User-level skill
-installation likewise requires the target tool to be detected; use
-`--level project` for an intentional project-local install.
+the CLI refuses to write while its executable is running. The wizard installs
+MCP configuration at app/user scope by default. GitHub Copilot uses the VS Code
+user profile in the wizard; the direct command without `--scope user` targets
+the workspace. The optional skill defaults to all projects (user level), or
+can be installed into the current project. Existing configs and skill folders
+are backed up before edits or removals.
 
 ### 11. Skill Management
 

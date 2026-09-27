@@ -340,16 +340,15 @@ Running bare `nlm setup` opens an interactive wizard that detects installed tool
 configures MCP servers with private backups, and offers optional skill installation:
 
 ```bash
-nlm setup                       # Interactive wizard: Add, Remove, or Get JSON (recommended)
+nlm setup                       # Guided wizard: Add, Remove, or Get JSON (recommended)
 nlm setup add claude-code       # Direct command: Configure via `claude mcp add`
 nlm setup add codex             # Direct command: Configure Codex CLI / ChatGPT desktop
 nlm setup add github-copilot --scope user  # Configure VS Code user profile
-nlm setup add github-copilot    # Configure workspace (.vscode/mcp.json)
+nlm setup add github-copilot    # Direct command: Configure current workspace (.vscode/mcp.json)
 nlm setup add claude-desktop    # Configure detected Claude Desktop profile(s)
 nlm setup add claude-desktop --profile 3p  # Select Relay AI / 3P explicitly
 nlm setup remove claude-desktop --profile regular  # Remove from regular explicitly
 nlm setup add gemini            # Write ~/.gemini/settings.json
-nlm setup add github-copilot    # Write .vscode/mcp.json
 nlm setup add cursor            # Write ~/.cursor/mcp.json
 nlm setup add windsurf          # Write mcp_config.json
 nlm setup add json              # Generate JSON config for any tool
@@ -364,6 +363,14 @@ regular and Relay AI/3P profiles are present, the command prompts for regular,
 3P, or both. Removal uses the same profile selection. User-level skill installs
 likewise require the target tool to be detected; project-level installs remain
 explicitly scoped to the current project.
+
+The guided wizard defaults MCP setup to the supported app/user-level location.
+Its optional skill step defaults to **All projects (user level)** and offers
+**This folder (project level)**. The Codex CLI and ChatGPT desktop app share
+their MCP configuration; selecting this target makes the server available to
+both on that host. For GitHub Copilot, the wizard targets the VS Code user
+profile, while the direct command without `--scope user` targets the current
+workspace.
 Removal only offers profiles containing `gemini-notebook-mcp` or a recognized
 legacy entry, so unrelated MCP servers are not removed.
 

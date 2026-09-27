@@ -1,5 +1,5 @@
 <!-- nlm-skill-start -->
-<!-- nlm-version: 0.12.1 -->
+<!-- nlm-version: 0.13.0 -->
 ## NLM - Gemini Notebook (formerly Google NotebookLM) CLI Expert
 
 **Triggers:** "nlm", "notebooklm", "Gemini Notebook", "plan usage", "quota", "podcast", "audio overview", "research"
@@ -30,7 +30,7 @@ nlm usage --json             # Machine-readable usage percentages and timestamps
 6. **⚠️ NEVER auto-delete**: Always ask user before `nlm delete`
 7. **⚠️ NEVER use `nlm chat start`**: It's an interactive REPL. Use `nlm notebook query` instead
 8. **Use the configured MCP name**: Register this server as `gemini-notebook-mcp`; the executable remains `notebooklm-mcp` for compatibility.
-9. **Never configure blindly**: `nlm setup` verifies the MCP executable and detected client profile before writing. User-level skills require the target tool to be detected; use `--level project` for an intentional project-local install.
+9. **Use the setup wizard for client configuration**: Run `nlm setup` to detect installed clients and choose Add, Remove, or Get JSON. MCP setup defaults to app/user scope. Codex CLI and the ChatGPT desktop app share one MCP config on the same host. The optional skill defaults to all projects (user level); choose project level only when the user wants this folder. The wizard backs up existing configs and skills before changing them.
 10. **Check plan usage before quota-limited work**: Run `nlm usage` or call `usage_get` to inspect rolling and weekly percentages and reset times. Authentication failures should be refreshed with `nlm auth refresh`, not treated as exhausted quota.
 
 ### Common Workflows
