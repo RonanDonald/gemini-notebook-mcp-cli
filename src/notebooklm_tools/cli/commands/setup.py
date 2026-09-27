@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import tomllib
+import tomlkit
 from pathlib import Path
 
 import typer
@@ -241,8 +242,43 @@ def _antigravity_config_path() -> Path:
 
 
 def _codex_config_path() -> Path:
-    """Get Codex CLI config directory path."""
+    """Get Codex CLI / ChatGPT desktop config directory path."""
+    codex_home = os.environ.get("CODEX_HOME")
+    if codex_home and codex_home.strip():
+        return Path(codex_home.strip())
     return Path.home() / ".codex"
+
+
+def _chatgpt_desktop_candidate_paths() -> list[Path]:
+    """Return OS-specific candidate install paths for ChatGPT desktop app."""
+    system = platform.system()
+    if system == "Darwin":
+        return [
+            Path("/Applications/ChatGPT.app"),
+            Path.home() / "Applications" / "ChatGPT.app",
+        ]
+    elif system == "Windows":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        candidates = []
+        if local_app_data:
+            candidates.append(Path(local_app_data) / "Programs" / "ChatGPT" / "ChatGPT.exe")
+        return candidates
+    else:
+        return [
+            Path("/opt/chatgpt"),
+            Path.home() / ".local" / "share" / "applications" / "chatgpt.desktop",
+            Path("/usr/share/applications") / "chatgpt.desktop",
+        ]
+
+
+def _detect_chatgpt_desktop() -> bool:
+    """Check if ChatGPT desktop app is installed on this system."""
+    for path in _chatgpt_desktop_candidate_paths():
+        if path.exists():
+            return True
+    if platform.system() == "Linux" and shutil.which("chatgpt"):
+        return True
+    return False
 
 
 def _opencode_config_path() -> Path:
@@ -579,6 +615,7 @@ CLIENT_REGISTRY = {
 
 CLIENT_ALIASES = {
     "copilot": "github-copilot",
+    "chatgpt-desktop": "codex",
 }
 
 
@@ -885,62 +922,133 @@ def _setup_antigravity() -> bool:
     return True
 
 
-def _setup_codex() -> bool:
-    """Add MCP to Codex CLI via `codex mcp add` (preferred) or config.toml fallback."""
+def _edit_codex_entry(path: Path, *, command: str | None = None, remove: bool = False) -> Path | None:
+    """Safely add or remove Gemini Notebook MCP entry in config.toml using tomlkit."""
+    if not path.exists() and remove:
+        return None
+
+    raw_text = path.read_text(encoding="utf-8") if path.exists() else ""
+    try:
+        doc = tomlkit.parse(raw_text)
+    except Exception as exc:
+        raise ConfigParseError(path, exc) from exc
+
+    backup = backup_existing(path, label="codex-config")
+
+    if remove:
+        if "mcp_servers" in doc:
+            servers = doc["mcp_servers"]
+            for name in MCP_SERVER_NAMES:
+                if name in servers:
+                    del servers[name]
+    else:
+        if "mcp_servers" not in doc:
+            doc["mcp_servers"] = tomlkit.table()
+        servers = doc["mcp_servers"]
+        for legacy in LEGACY_MCP_SERVER_NAMES:
+            if legacy in servers and legacy != MCP_SERVER_NAME:
+                del servers[legacy]
+
+        entry = servers.get(MCP_SERVER_NAME)
+        if entry is None or not isinstance(entry, dict):
+            entry = tomlkit.table()
+            servers[MCP_SERVER_NAME] = entry
+
+        entry["command"] = command or MCP_SERVER_CMD
+        entry["args"] = []
+        entry["tool_timeout_sec"] = 300
+
+    atomic_write_text(path, tomlkit.dumps(doc))
+    return backup
+
+
+def _codex_repair_reason(path: Path | None = None) -> str | None:
+    """Return a human-readable repair reason if Codex entry exists but is defective."""
+    config_path = path or (_codex_config_path() / "config.toml")
+    if not config_path.exists():
+        return None
+    try:
+        doc = tomlkit.parse(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    servers = doc.get("mcp_servers", {})
+    if not isinstance(servers, dict):
+        return None
+    entry = None
+    for name in MCP_SERVER_NAMES:
+        if name in servers:
+            entry = servers[name]
+            break
+    if entry is None or not isinstance(entry, dict):
+        return None
+
+    cmd = entry.get("command", "")
+    binary_path = _find_mcp_server_path()
+    if binary_path and cmd == MCP_SERVER_CMD:
+        return f"server command '{cmd}' is not an absolute path"
+    timeout = entry.get("tool_timeout_sec")
+    if timeout is None or (isinstance(timeout, (int, float)) and timeout < 300):
+        return f"tool_timeout_sec ({timeout}) is below recommended 300"
+    return None
+
+
+def _setup_codex(repair: bool = False) -> bool:
+    """Add MCP to Codex CLI and/or ChatGPT desktop app via codex CLI or direct TOML."""
+    config_dir = _codex_config_path()
+    config_path = config_dir / "config.toml"
+
+    binary_path = _find_mcp_server_path()
+    if not binary_path:
+        console.print(
+            "[red]Error:[/red] notebooklm-mcp was not found in PATH. "
+            "Install it first or add its full path manually."
+        )
+        return False
+
+    repair_reason = _codex_repair_reason(config_path)
+    is_configured = False
+    if config_path.exists():
+        try:
+            doc = tomlkit.parse(config_path.read_text(encoding="utf-8"))
+            mcp = doc.get("mcp_servers", {})
+            is_configured = bool(_configured_mcp_names(mcp))
+        except Exception:
+            pass
+
+    if is_configured and not repair:
+        console.print("[green]✓[/green] Already configured in Codex CLI / ChatGPT desktop")
+        return True
+
     codex_cmd = shutil.which("codex")
-    if codex_cmd:
+    if codex_cmd and not is_configured:
+        if config_path.exists():
+            backup_existing(config_path, label="codex-config")
         try:
             result = subprocess.run(
-                [codex_cmd, "mcp", "add", MCP_SERVER_NAME, "--", MCP_SERVER_CMD],
+                [codex_cmd, "mcp", "add", MCP_SERVER_NAME, "--", binary_path],
                 capture_output=True,
                 text=True,
                 timeout=10,
             )
-            if result.returncode == 0:
-                console.print("[green]✓[/green] Added to Codex CLI")
-                return True
-            elif "already exists" in result.stderr.lower():
-                console.print("[green]✓[/green] Already configured in Codex CLI")
-                return True
-            else:
-                console.print(
-                    f"[yellow]Warning:[/yellow] codex mcp add returned: {result.stderr.strip()}"
-                )
+            if result.returncode != 0 and "already exists" not in result.stderr.lower():
+                console.print(f"[yellow]Warning:[/yellow] codex mcp add returned: {result.stderr.strip()}")
                 return False
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
             console.print(f"[yellow]Warning:[/yellow] Could not run codex command: {e}")
             return False
+
+    try:
+        _edit_codex_entry(config_path, command=binary_path)
+    except Exception as e:
+        console.print(f"[red]Error updating Codex config.toml:[/red] {e}")
+        return False
+
+    if repair:
+        console.print(f"[green]✓[/green] Repaired Codex / ChatGPT desktop configuration ({repair_reason})")
     else:
-        # Fallback: write config.toml directly
-        config_path = _codex_config_path() / "config.toml"
-
-        if config_path.exists():
-            try:
-                content = config_path.read_text(encoding="utf-8")
-                config = tomllib.loads(content)
-                mcp_servers = config.get("mcp_servers", {})
-                if _configured_mcp_names(mcp_servers):
-                    console.print("[green]✓[/green] Already configured in Codex CLI")
-                    return True
-            except Exception:
-                content = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
-        else:
-            content = ""
-
-        section = """
-# Gemini Notebook MCP server
-[mcp_servers.gemini-notebook-mcp]
-command = "notebooklm-mcp"
-args = []
-enabled = true
-"""
-        new_content = content.rstrip() + "\n" + section if content.strip() else section.lstrip()
-
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(new_content, encoding="utf-8")
-        console.print("[green]✓[/green] Added to Codex CLI (config.toml)")
-        console.print(f"  [dim]{config_path}[/dim]")
-        return True
+        console.print("[green]✓[/green] Added to Codex CLI / ChatGPT desktop")
+    console.print(f"  [dim]{config_path}[/dim]")
+    return True
 
 
 def _setup_opencode() -> bool:
@@ -1015,6 +1123,9 @@ def _detect_tool(client_id: str) -> bool:
         "codex": ("codex", [_codex_config_path()]),
         "opencode": ("opencode", [_opencode_config_path()]),
     }
+    if client_id == "codex":
+        return _detect_chatgpt_desktop() or is_tool_on_system(binary="codex", root_dirs=[_codex_config_path()])
+
     entry = detection.get(client_id)
     if not entry:
         return False
@@ -1498,10 +1609,16 @@ def _remove_single(client: str, profile: str | None = None) -> bool:
             console.print("[yellow]Warning:[/yellow] 'claude' command not found")
             return False
 
-    # CLI-based removal for Codex
+    # Removal for Codex CLI / ChatGPT desktop
     if client == "codex":
+        config_dir = _codex_config_path()
+        config_path = config_dir / "config.toml"
         codex_cmd = shutil.which("codex")
+
+        removed = False
         if codex_cmd:
+            if config_path.exists():
+                backup_existing(config_path, label="codex-config")
             try:
                 result = subprocess.run(
                     [codex_cmd, "mcp", "remove", MCP_SERVER_NAME],
@@ -1510,7 +1627,6 @@ def _remove_single(client: str, profile: str | None = None) -> bool:
                     timeout=10,
                 )
                 removed = result.returncode == 0
-                last_error = result.stderr.strip()
                 for legacy_name in LEGACY_MCP_SERVER_NAMES:
                     legacy_result = subprocess.run(
                         [codex_cmd, "mcp", "remove", legacy_name],
@@ -1519,20 +1635,25 @@ def _remove_single(client: str, profile: str | None = None) -> bool:
                         timeout=10,
                     )
                     removed = legacy_result.returncode == 0 or removed
-                    if legacy_result.stderr.strip():
-                        last_error = legacy_result.stderr.strip()
-                if removed:
-                    console.print("[green]✓[/green] Removed from Codex CLI")
-                    return True
-                else:
-                    console.print(f"[yellow]Note:[/yellow] {last_error}")
-                    return False
-            except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
-                console.print(f"[yellow]Warning:[/yellow] Could not run codex command: {e}")
-                return False
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                pass
+
+        if config_path.exists():
+            try:
+                toml_configured = _is_already_configured("codex")
+                if toml_configured:
+                    _edit_codex_entry(config_path, remove=True)
+                    removed = True
+            except Exception:
+                pass
+
+        if removed:
+            console.print("[green]✓[/green] Removed from Codex CLI / ChatGPT desktop")
+            return True
         else:
-            console.print("[yellow]Warning:[/yellow] 'codex' command not found")
+            console.print("[dim]Gemini Notebook MCP was not configured in Codex / ChatGPT desktop.[/dim]")
             return False
+
 
     # OpenCode uses "mcp" key, not "mcpServers"
     if client == "opencode":
