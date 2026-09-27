@@ -126,7 +126,9 @@ def test_flow_add_offers_skill_when_only_skill_capable_tools_exist(monkeypatch):
     monkeypatch.setattr(setup_wizard, "scan_mcp_targets", lambda: [])
     offers = []
     monkeypatch.setattr(
-        setup_wizard, "_flow_skill_offer", lambda selected, **kwargs: offers.append(selected) or True
+        setup_wizard,
+        "_flow_skill_offer",
+        lambda selected, **kwargs: offers.append(selected) or True,
     )
 
     assert setup_wizard._flow_add() == 0
@@ -570,10 +572,16 @@ def test_flow_remove_selects_only_exact_target_id(monkeypatch, tmp_path):
     assert setup_wizard._flow_remove() == 0
     assert selected == ["skill:extra:user"]
 
+
 def test_build_connect_rows_groups_and_hides_paths():
     targets = [
         setup_wizard.SetupTarget(
-            "codex", "Codex / ChatGPT", True, True, Path("/x"), "agents",
+            "codex",
+            "Codex / ChatGPT",
+            True,
+            True,
+            Path("/x"),
+            "agents",
             repair_reason="tool_timeout_sec (None) is below 300",
         ),
         setup_wizard.SetupTarget("windsurf", "Windsurf", True, False, Path("/y"), None),
@@ -592,11 +600,15 @@ def test_build_connect_rows_groups_and_hides_paths():
     assert by_value["cursor"].disabled == "already connected"
     assert by_value["cursor"].checked is False
 
+
 def test_results_summary_has_no_path_dump(capsys):
     results = [
         setup_wizard.SetupResult(
-            "codex", "configured", Path("/Users/me/.codex/config.toml"),
-            (Path("/Users/me/.codex/config.toml.bak"),), "Configured",
+            "codex",
+            "configured",
+            Path("/Users/me/.codex/config.toml"),
+            (Path("/Users/me/.codex/config.toml.bak"),),
+            "Configured",
         )
     ]
     setup_wizard._display_results_summary("Connection Results", results)
@@ -605,16 +617,35 @@ def test_results_summary_has_no_path_dump(capsys):
     assert "config.toml.bak" not in out
     assert "backed up" in out.lower()
 
+
 def test_build_skill_rows_flags_upgrade_and_shared(monkeypatch):
-    monkeypatch.setattr(skill, "get_skill_destination", lambda t, l: Path(f"/skills/{t}"))
+    monkeypatch.setattr(skill, "get_skill_destination", lambda t, level: Path(f"/skills/{t}"))
     monkeypatch.setattr(setup_wizard.setup, "_detect_tool", lambda k: True)
     monkeypatch.setattr(skill, "_is_tool_installed", lambda t: True)
     states = {
-        "agents": {"supported": True, "installed": True, "version": "0.0.1", "package_version": "9.9.9", "upgrade_available": True},
-        "claude-code": {"supported": True, "installed": True, "version": "9.9.9", "package_version": "9.9.9", "upgrade_available": False},
+        "agents": {
+            "supported": True,
+            "installed": True,
+            "version": "0.0.1",
+            "package_version": "9.9.9",
+            "upgrade_available": True,
+        },
+        "claude-code": {
+            "supported": True,
+            "installed": True,
+            "version": "9.9.9",
+            "package_version": "9.9.9",
+            "upgrade_available": False,
+        },
     }
-    default = {"supported": True, "installed": False, "version": None, "package_version": "9.9.9", "upgrade_available": False}
-    monkeypatch.setattr(skill, "skill_version_state", lambda t, l: states.get(t, default))
+    default = {
+        "supported": True,
+        "installed": False,
+        "version": None,
+        "package_version": "9.9.9",
+        "upgrade_available": False,
+    }
+    monkeypatch.setattr(skill, "skill_version_state", lambda t, level: states.get(t, default))
     options = [
         ("agents", "Agents / Codex / ChatGPT / Gemini CLI", ["codex", "gemini"]),
         ("claude-code", "Claude Code CLI", ["claude-code"]),
@@ -629,12 +660,20 @@ def test_build_skill_rows_flags_upgrade_and_shared(monkeypatch):
     # no full path in the label
     assert "/skills/" not in by_value["agents"].label
 
+
 def test_build_remove_rows_groups_and_opts_in(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     targets = [
-        setup_wizard.SetupTarget("cursor", "Cursor", True, True, tmp_path / ".cursor/mcp.json", "cursor"),
         setup_wizard.SetupTarget(
-            "skill:agents:user", "nlm-skill (shared) [user]", True, True, tmp_path / ".codex/skill", "agents"
+            "cursor", "Cursor", True, True, tmp_path / ".cursor/mcp.json", "cursor"
+        ),
+        setup_wizard.SetupTarget(
+            "skill:agents:user",
+            "nlm-skill (shared) [user]",
+            True,
+            True,
+            tmp_path / ".codex/skill",
+            "agents",
         ),
     ]
     rows = setup_wizard.build_remove_rows(targets)

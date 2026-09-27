@@ -691,7 +691,16 @@ def _setup_claude_code() -> bool:
     try:
         backup_existing(config_path, label="claude-code-config")
         result = subprocess.run(
-            [claude_cmd, "mcp", "add", "-s", "user", MCP_SERVER_NAME, "--", _default_server_command()],
+            [
+                claude_cmd,
+                "mcp",
+                "add",
+                "-s",
+                "user",
+                MCP_SERVER_NAME,
+                "--",
+                _default_server_command(),
+            ],
             capture_output=True,
             text=True,
             timeout=10,

@@ -15,16 +15,25 @@ def test_build_status_rows_all_states():
     def state_fn(target):
         return {
             "claude-code": {
-                "supported": True, "installed": True, "version": "0.1.0",
-                "package_version": "0.2.0", "upgrade_available": True,
+                "supported": True,
+                "installed": True,
+                "version": "0.1.0",
+                "package_version": "0.2.0",
+                "upgrade_available": True,
             },
             "windsurf": {
-                "supported": True, "installed": False, "version": None,
-                "package_version": "0.2.0", "upgrade_available": False,
+                "supported": True,
+                "installed": False,
+                "version": None,
+                "package_version": "0.2.0",
+                "upgrade_available": False,
             },
             "claude-desktop": {
-                "supported": False, "installed": False, "version": None,
-                "package_version": "0.2.0", "upgrade_available": False,
+                "supported": False,
+                "installed": False,
+                "version": None,
+                "package_version": "0.2.0",
+                "upgrade_available": False,
             },
         }[target.id]
 
@@ -41,8 +50,11 @@ def test_build_status_rows_current_skill_shows_version():
 
     def state_fn(target):
         return {
-            "supported": True, "installed": True, "version": "0.2.0",
-            "package_version": "0.2.0", "upgrade_available": False,
+            "supported": True,
+            "installed": True,
+            "version": "0.2.0",
+            "package_version": "0.2.0",
+            "upgrade_available": False,
         }
 
     row = w.build_status_rows(targets, state_fn)[0]

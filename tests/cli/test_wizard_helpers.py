@@ -5,9 +5,13 @@ from notebooklm_tools.cli.commands import setup_wizard as w
 
 def test_rows_to_choices_inserts_separators_per_group():
     rows = [
-        w.PickerRow(group="Needs a fix", label="Codex", value="codex", checked=True, note="⚠ quick fix"),
+        w.PickerRow(
+            group="Needs a fix", label="Codex", value="codex", checked=True, note="⚠ quick fix"
+        ),
         w.PickerRow(group="Not connected yet", label="Windsurf", value="windsurf", checked=True),
-        w.PickerRow(group="Already connected", label="Cursor", value="cursor", disabled="already connected"),
+        w.PickerRow(
+            group="Already connected", label="Cursor", value="cursor", disabled="already connected"
+        ),
     ]
     choices = w.rows_to_choices(rows)
     titles = [getattr(c, "title", str(c)) for c in choices]

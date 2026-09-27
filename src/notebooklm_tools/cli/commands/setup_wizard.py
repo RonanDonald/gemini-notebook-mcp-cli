@@ -463,9 +463,7 @@ def build_skill_rows(tool_options, level: str, selected_mcp_ids: list[str]) -> l
             continue
         seen.add(dest)
         state = skill.skill_version_state(tool_key, level)
-        row_label = (
-            f"{label}   · one shared file covers these" if tool_key == "agents" else label
-        )
+        row_label = f"{label}   · one shared file covers these" if tool_key == "agents" else label
         if state["upgrade_available"]:
             note = "· upgrade available"
         elif state["installed"] and state["version"]:
