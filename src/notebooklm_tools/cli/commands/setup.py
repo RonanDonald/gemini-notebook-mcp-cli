@@ -16,6 +16,7 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+import questionary
 import tomlkit
 import typer
 from rich.prompt import Confirm, Prompt
@@ -772,10 +773,12 @@ def _select_claude_desktop_profile_paths(
         ),
         (CLAUDE_DESKTOP_PROFILE_BOTH, "Both detected profiles"),
     ]
-    selected = _prompt_numbered(
+    selected = questionary.select(
         "Multiple Claude Desktop profiles detected:",
-        options,
-    )
+        choices=[questionary.Choice(title=label, value=value) for value, label in options],
+    ).ask()
+    if selected is None:
+        return {}
     if selected == CLAUDE_DESKTOP_PROFILE_BOTH:
         return detected
     return {selected: detected[selected]}
@@ -1448,77 +1451,81 @@ def _prompt_numbered(prompt_text: str, options: list[tuple[str, str]], default: 
     return options[int(choice) - 1][0]
 
 
-def _setup_json() -> None:
-    """Interactive flow to generate MCP JSON config for any tool."""
-    console.print("[bold]Generate MCP JSON config[/bold]\n")
-    console.print("This generates a JSON snippet you can paste into any tool's MCP config.\n")
+def build_json_snippet(
+    config_type: str = "regular", use_full_path: bool = True, wrap: bool = True
+) -> dict:
+    """Build the MCP JSON snippet for pasting into another tool's config.
 
-    config_type = _prompt_numbered(
-        "Config type:",
-        [
-            ("uvx", "uvx (no install required)"),
-            ("regular", "Regular (uses installed binary)"),
-        ],
-    )
-
-    use_full_path = False
-    if config_type == "regular":
-        path_choice = _prompt_numbered(
-            "Command format:",
-            [
-                ("name", f"Command name ({MCP_SERVER_CMD})"),
-                ("full", "Full path to binary"),
-            ],
-        )
-        use_full_path = path_choice == "full"
-
-    config_scope = _prompt_numbered(
-        "Config scope:",
-        [
-            ("existing", "Add to existing config (server entry only)"),
-            ("new", "New config file (includes mcpServers wrapper)"),
-        ],
-    )
-
-    # Build the server entry
+    Defaults to the full detected binary path in an ``mcpServers`` wrapper.
+    """
     if config_type == "uvx":
-        server_entry = {
-            "command": "uvx",
-            "args": ["--from", "notebooklm-mcp-cli", "notebooklm-mcp"],
-        }
+        entry = {"command": "uvx", "args": ["--from", "notebooklm-mcp-cli", "notebooklm-mcp"]}
     else:
-        if use_full_path:
-            binary_path = _find_mcp_server_path()
-            if not binary_path:
-                console.print(
-                    "[yellow]Warning:[/yellow] notebooklm-mcp not found in PATH, "
-                    "using command name instead"
-                )
-                binary_path = MCP_SERVER_CMD
-            server_entry = {"command": binary_path}
-        else:
-            server_entry = {"command": MCP_SERVER_CMD}
+        entry = {"command": _default_server_command() if use_full_path else MCP_SERVER_CMD}
+    return {"mcpServers": {MCP_SERVER_NAME: entry}} if wrap else {MCP_SERVER_NAME: entry}
 
-    if config_scope == "new":
-        output = {"mcpServers": {MCP_SERVER_NAME: server_entry}}
-    else:
-        output = {MCP_SERVER_NAME: server_entry}
 
-    json_str = json.dumps(output, indent=2)
-
+def _render_and_copy_snippet(snippet: dict) -> None:
+    """Print a snippet with syntax highlighting and copy it to the clipboard."""
+    json_str = json.dumps(snippet, indent=2)
     console.print()
     console.print(Syntax(json_str, "json", theme="monokai", padding=1))
     console.print()
 
-    if Confirm.ask("Copy to clipboard?", default=True):
-        from notebooklm_tools.cli.commands.setup_wizard import copy_to_clipboard
+    from notebooklm_tools.cli.commands.setup_wizard import copy_to_clipboard
 
-        if copy_to_clipboard(json_str):
-            console.print("[green]✓[/green] Copied to clipboard")
-        else:
-            console.print(
-                "[yellow]Warning:[/yellow] Could not copy to clipboard (no clipboard utility available)"
-            )
+    if copy_to_clipboard(json_str):
+        console.print("[green]✓[/green] Copied to clipboard")
+    else:
+        console.print("[dim]Copy it manually — no clipboard utility available.[/dim]")
+
+
+def _setup_json() -> None:
+    """Show the standard MCP snippet; offer advanced formats on request."""
+    console.print("[bold]Copy MCP setup for a tool not listed[/bold]\n")
+    console.print("Paste this into your tool's MCP settings:")
+    _render_and_copy_snippet(build_json_snippet())
+
+    choice = questionary.select(
+        "Need a different format?",
+        choices=["No, I'm done", "Advanced options"],
+    ).ask()
+    if choice is None or choice.startswith("No"):
+        return
+
+    style = questionary.select(
+        "Command style:",
+        choices=["Installed binary (recommended)", "uvx (no install required)"],
+    ).ask()
+    if style is None:
+        return
+    config_type = "uvx" if "uvx" in style else "regular"
+
+    use_full_path = True
+    if config_type == "regular":
+        path_choice = questionary.select(
+            "Path style:",
+            choices=[
+                "Full path to the binary (most reliable)",
+                f"Just the command name ({MCP_SERVER_CMD})",
+            ],
+        ).ask()
+        if path_choice is None:
+            return
+        use_full_path = path_choice.startswith("Full")
+
+    scope_choice = questionary.select(
+        "Snippet shape:",
+        choices=[
+            "Full config file (with mcpServers wrapper)",
+            "Server entry only (add to an existing config)",
+        ],
+    ).ask()
+    if scope_choice is None:
+        return
+    wrap = scope_choice.startswith("Full")
+
+    _render_and_copy_snippet(build_json_snippet(config_type, use_full_path, wrap))
 
 
 # =============================================================================
