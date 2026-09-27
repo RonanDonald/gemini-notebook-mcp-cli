@@ -88,15 +88,6 @@ def test_run_add_records_backups(tmp_path, monkeypatch):
     assert results[0].backup_paths[0].name.endswith("-gemini-backup")
 
 
-def test_result_summary_shows_full_backup_path(capsys, tmp_path):
-    backup = tmp_path / "backups" / "saved-config"
-    result = setup_wizard.SetupResult("codex", "configured", None, (backup,), "Configured")
-
-    setup_wizard._display_results_summary("Setup Results", [result])
-
-    assert str(backup) in capsys.readouterr().out
-
-
 def test_add_one_mcp_routes_copilot_to_user_scope(monkeypatch):
     called = []
     monkeypatch.setattr(
@@ -106,7 +97,7 @@ def test_add_one_mcp_routes_copilot_to_user_scope(monkeypatch):
     assert called == ["user"]
 
 
-def test_flow_add_select_all_detected_passes_every_target(monkeypatch):
+def test_flow_add_passes_selected_targets_and_has_no_select_all_pseudo(monkeypatch):
     targets = [
         setup_wizard.SetupTarget(
             "cursor", "Cursor", True, False, Path("/tmp/cursor.json"), "cursor"
@@ -118,15 +109,16 @@ def test_flow_add_select_all_detected_passes_every_target(monkeypatch):
 
     def fake_checkbox(prompt, *, choices):
         captured_choices.extend(choices)
-        return SimpleNamespace(ask=lambda: ["__all__"])
+        return SimpleNamespace(ask=lambda: ["cursor", "codex"])
 
     monkeypatch.setattr(setup_wizard.questionary, "checkbox", fake_checkbox)
     selected = []
     monkeypatch.setattr(setup_wizard, "run_add", lambda ids: selected.extend(ids) or [])
-    monkeypatch.setattr(setup_wizard, "_flow_skill_offer", lambda selected: True)
+    monkeypatch.setattr(setup_wizard, "_flow_skill_offer", lambda selected, **kwargs: True)
 
     assert setup_wizard._flow_add() == 0
-    assert any(choice.value == "__all__" for choice in captured_choices)
+    # No "select all" pseudo-choice anymore (questionary's <a> key handles it)
+    assert not any(getattr(choice, "value", None) == "__all__" for choice in captured_choices)
     assert selected == ["cursor", "codex"]
 
 
@@ -134,7 +126,9 @@ def test_flow_add_offers_skill_when_only_skill_capable_tools_exist(monkeypatch):
     monkeypatch.setattr(setup_wizard, "scan_mcp_targets", lambda: [])
     offers = []
     monkeypatch.setattr(
-        setup_wizard, "_flow_skill_offer", lambda selected: offers.append(selected) or True
+        setup_wizard,
+        "_flow_skill_offer",
+        lambda selected, **kwargs: offers.append(selected) or True,
     )
 
     assert setup_wizard._flow_add() == 0
@@ -152,7 +146,7 @@ def test_flow_add_returns_cancel_status_from_skill_prompt(monkeypatch):
     assert setup_wizard._flow_add() == 130
 
 
-def test_skill_offer_select_all_installs_shared_destination_once(monkeypatch, tmp_path):
+def test_skill_offer_dedups_shared_destination(monkeypatch, tmp_path):
     destination = tmp_path / "nlm-skill"
     monkeypatch.setattr(
         skill,
@@ -169,15 +163,15 @@ def test_skill_offer_select_all_installs_shared_destination_once(monkeypatch, tm
     monkeypatch.setattr(
         setup_wizard.questionary,
         "select",
-        lambda *args, **kwargs: SimpleNamespace(ask=lambda: "This folder (project level)"),
+        lambda *args, **kwargs: SimpleNamespace(ask=lambda: "Just this folder"),
     )
     choices_seen = []
 
-    def choose_all(*args, **kwargs):
+    def capture_checkbox(*args, **kwargs):
         choices_seen.extend(kwargs["choices"])
-        return SimpleNamespace(ask=lambda: ["__all__"])
+        return SimpleNamespace(ask=lambda: ["agents"])
 
-    monkeypatch.setattr(setup_wizard.questionary, "checkbox", choose_all)
+    monkeypatch.setattr(setup_wizard.questionary, "checkbox", capture_checkbox)
     installed = []
     monkeypatch.setattr(
         skill,
@@ -190,7 +184,10 @@ def test_skill_offer_select_all_installs_shared_destination_once(monkeypatch, tm
 
     setup_wizard._flow_skill_offer([])
 
-    assert any(choice.value == "__all__" for choice in choices_seen)
+    # No select-all pseudo-choice; shared destination listed once (agents, not antigravity)
+    assert not any(getattr(c, "value", None) == "__all__" for c in choices_seen)
+    real_values = [getattr(c, "value", None) for c in choices_seen if hasattr(c, "value")]
+    assert "antigravity" not in real_values
     assert installed == [("agents", "project")]
 
 
@@ -247,9 +244,7 @@ def test_add_interrupt_summarizes_completed_target(monkeypatch, capsys):
     monkeypatch.setattr(
         setup_wizard.questionary,
         "select",
-        lambda *args, **kwargs: SimpleNamespace(
-            ask=lambda: "Add — configure Gemini Notebook MCP for installed tools"
-        ),
+        lambda *args, **kwargs: SimpleNamespace(ask=lambda: "Add the MCP to my tools"),
     )
     monkeypatch.setattr(
         setup_wizard.questionary,
@@ -266,7 +261,7 @@ def test_add_interrupt_summarizes_completed_target(monkeypatch, capsys):
 
     assert setup_wizard.run_setup_wizard() == 130
     output = capsys.readouterr().out
-    assert "MCP Setup Results" in output
+    assert "Connection Results" in output
     assert "cursor" in output
 
 
@@ -531,7 +526,7 @@ def test_flow_remove_ctrl_c_returns_130_with_partial_summary(monkeypatch, tmp_pa
     monkeypatch.setattr(
         setup_wizard.questionary,
         "checkbox",
-        lambda *args, **kwargs: SimpleNamespace(ask=lambda: ["__all__"]),
+        lambda *args, **kwargs: SimpleNamespace(ask=lambda: ["tool1", "tool2"]),
     )
     monkeypatch.setattr(
         setup_wizard.questionary,
@@ -576,3 +571,123 @@ def test_flow_remove_selects_only_exact_target_id(monkeypatch, tmp_path):
 
     assert setup_wizard._flow_remove() == 0
     assert selected == ["skill:extra:user"]
+
+
+def test_build_connect_rows_groups_and_hides_paths():
+    targets = [
+        setup_wizard.SetupTarget(
+            "codex",
+            "Codex / ChatGPT",
+            True,
+            True,
+            Path("/x"),
+            "agents",
+            repair_reason="tool_timeout_sec (None) is below 300",
+        ),
+        setup_wizard.SetupTarget("windsurf", "Windsurf", True, False, Path("/y"), None),
+        setup_wizard.SetupTarget("cursor", "Cursor", True, True, Path("/z"), "cursor"),
+    ]
+    rows = setup_wizard.build_connect_rows(targets)
+    by_value = {r.value: r for r in rows}
+    assert by_value["codex"].group == "Needs a fix"
+    assert by_value["codex"].checked is True
+    assert "quick fix" in by_value["codex"].note
+    assert "/x" not in by_value["codex"].label
+    assert "300" not in by_value["codex"].label
+    assert by_value["windsurf"].group == "Not connected yet"
+    assert by_value["windsurf"].checked is True
+    assert by_value["cursor"].group == "Already connected"
+    assert by_value["cursor"].disabled == "already connected"
+    assert by_value["cursor"].checked is False
+
+
+def test_results_summary_has_no_path_dump(capsys):
+    results = [
+        setup_wizard.SetupResult(
+            "codex",
+            "configured",
+            Path("/Users/me/.codex/config.toml"),
+            (Path("/Users/me/.codex/config.toml.bak"),),
+            "Configured",
+        )
+    ]
+    setup_wizard._display_results_summary("Connection Results", results)
+    out = capsys.readouterr().out
+    assert "Backup for" not in out
+    assert "config.toml.bak" not in out
+    assert "backed up" in out.lower()
+
+
+def test_build_skill_rows_flags_upgrade_and_shared(monkeypatch):
+    monkeypatch.setattr(skill, "get_skill_destination", lambda t, level: Path(f"/skills/{t}"))
+    monkeypatch.setattr(setup_wizard.setup, "_detect_tool", lambda k: True)
+    monkeypatch.setattr(skill, "_is_tool_installed", lambda t: True)
+    states = {
+        "agents": {
+            "supported": True,
+            "installed": True,
+            "version": "0.0.1",
+            "package_version": "9.9.9",
+            "upgrade_available": True,
+        },
+        "claude-code": {
+            "supported": True,
+            "installed": True,
+            "version": "9.9.9",
+            "package_version": "9.9.9",
+            "upgrade_available": False,
+        },
+    }
+    default = {
+        "supported": True,
+        "installed": False,
+        "version": None,
+        "package_version": "9.9.9",
+        "upgrade_available": False,
+    }
+    monkeypatch.setattr(skill, "skill_version_state", lambda t, level: states.get(t, default))
+    options = [
+        ("agents", "Agents / Codex / ChatGPT / Gemini CLI", ["codex", "gemini"]),
+        ("claude-code", "Claude Code CLI", ["claude-code"]),
+    ]
+    rows = setup_wizard.build_skill_rows(options, "user", selected_mcp_ids=[])
+    by_value = {r.value: r for r in rows}
+    assert "shared file" in by_value["agents"].label
+    assert "upgrade available" in (by_value["agents"].note or "")
+    assert by_value["agents"].checked is True
+    assert "installed" in (by_value["claude-code"].note or "")
+    assert by_value["claude-code"].checked is False
+    # no full path in the label
+    assert "/skills/" not in by_value["agents"].label
+
+
+def test_build_remove_rows_groups_and_opts_in(monkeypatch, tmp_path):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    targets = [
+        setup_wizard.SetupTarget(
+            "cursor", "Cursor", True, True, tmp_path / ".cursor/mcp.json", "cursor"
+        ),
+        setup_wizard.SetupTarget(
+            "skill:agents:user",
+            "nlm-skill (shared) [user]",
+            True,
+            True,
+            tmp_path / ".codex/skill",
+            "agents",
+        ),
+    ]
+    rows = setup_wizard.build_remove_rows(targets)
+    by_value = {r.value: r for r in rows}
+    assert by_value["cursor"].group == "MCP connections"
+    assert by_value["cursor"].checked is False
+    assert by_value["cursor"].note.startswith("~")
+    assert by_value["skill:agents:user"].group == "Skills"
+    assert by_value["skill:agents:user"].checked is False
+
+
+def test_gemini_target_skill_id_resolves_to_shared_skill():
+    targets = {t.id: t for t in setup_wizard.scan_mcp_targets()}
+    gemini = targets["gemini"]
+    # Gemini CLI shares the "agents" skill file; its skill_id must resolve, not be n/a.
+    assert gemini.skill_id is not None
+    assert skill.get_skill_destination(gemini.skill_id, "user") is not None

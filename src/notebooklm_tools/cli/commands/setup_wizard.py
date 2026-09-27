@@ -17,6 +17,42 @@ from notebooklm_tools.cli.utils import make_console
 
 console = make_console()
 
+LEGEND_SELECT = "● = will do it   ○ = skip   (pre-ticked = recommended)"
+LEGEND_REMOVE = "● = will remove   ○ = keep"
+REASSURANCE_LINE = "Originals backed up in case you want to revert."
+
+
+@dataclass(frozen=True)
+class PickerRow:
+    """One row in a grouped questionary picker."""
+
+    group: str | None
+    label: str
+    value: str
+    checked: bool = False
+    disabled: str | None = None
+    note: str | None = None
+
+
+def rows_to_choices(rows: list[PickerRow]) -> list:
+    """Convert PickerRows into questionary Separators + Choices, grouped.
+
+    A separator is emitted once per non-empty group when the group name changes.
+    """
+    out: list = []
+    last_group: object = object()
+    for row in rows:
+        if row.group and row.group != last_group:
+            out.append(questionary.Separator(f"── {row.group} ──"))
+            last_group = row.group
+        title = f"{row.label}   {row.note}" if row.note else row.label
+        out.append(
+            questionary.Choice(
+                title=title, value=row.value, checked=row.checked, disabled=row.disabled
+            )
+        )
+    return out
+
 
 @dataclass(frozen=True)
 class SetupTarget:
@@ -140,6 +176,9 @@ def scan_mcp_targets() -> list[SetupTarget]:
             dest = setup._opencode_config_path()
 
         skill_id = client_id if client_id in skill.TOOL_CONFIGS else None
+        if client_id == "gemini":
+            # Gemini CLI shares the "agents" skill file (TOOL_CONFIGS key "gemini-cli").
+            skill_id = "gemini-cli"
         if client_id == "claude-desktop":
             # Claude desktop is MCP-only unless claude-code is installed
             skill_id = None
@@ -211,7 +250,7 @@ def run_add(selected: list[str]) -> list[SetupResult]:
                     client, "partial", dest, tuple(recorded), "Interrupted; inspect this target"
                 )
             )
-            _display_results_summary("MCP Setup Results (partial)", results)
+            _display_results_summary("Connection Results (partial)", results)
             raise
         except (OSError, ConfigParseError, ValueError) as exc:
             status, message = "failed", str(exc)
@@ -238,16 +277,16 @@ def _display_results_summary(title: str, results: list[SetupResult]) -> None:
     if not results:
         return
 
-    table = Table(title=title)
+    table = Table(title=title, padding=(0, 2))
     table.add_column("Target", style="bold")
     table.add_column("Status", justify="center")
-    table.add_column("Destination", style="dim")
     table.add_column("Notes")
 
+    any_backup = False
     for res in results:
         status_style = {
-            "configured": "[green]✓ configured[/green]",
-            "already": "[green]✓ already configured[/green]",
+            "configured": "[green]✓ connected[/green]",
+            "already": "[green]✓ already connected[/green]",
             "repaired": "[green]✓ repaired[/green]",
             "removed": "[green]✓ removed[/green]",
             "skipped": "[yellow]skipped[/yellow]",
@@ -255,19 +294,62 @@ def _display_results_summary(title: str, results: list[SetupResult]) -> None:
             "partial": "[yellow]⚠ partial[/yellow]",
         }.get(res.status, res.status)
 
-        dest_str = str(res.destination).replace(str(Path.home()), "~") if res.destination else "-"
-        notes = res.message
-        if res.backup_paths:
-            backup_str = ", ".join(p.name for p in res.backup_paths)
-            notes += f" [dim](backup: {backup_str})[/dim]"
-
-        table.add_row(res.id, status_style, dest_str, notes)
+        table.add_row(res.id, status_style, res.message)
+        any_backup = any_backup or bool(res.backup_paths)
 
     console.print()
     console.print(table)
-    for res in results:
-        for backup_path in res.backup_paths:
-            console.print(f"Backup for {res.id}: {backup_path}", markup=False, soft_wrap=True)
+    if any_backup:
+        console.print(f"\n[dim]{REASSURANCE_LINE}[/dim]")
+
+
+def build_status_rows(targets: list[SetupTarget], state_fn) -> list[dict]:
+    """Assemble per-tool status: connection state + skill state/version/upgrade."""
+    rows: list[dict] = []
+    for t in targets:
+        conn = "✓ set up" if t.configured else "✗ not yet"
+        st = state_fn(t)
+        if not st["supported"]:
+            skill_cell = "– n/a"
+        elif not st["installed"]:
+            skill_cell = "✗ not yet"
+        elif st["upgrade_available"]:
+            old = f"v{st['version']}" if st["version"] else "unversioned"
+            skill_cell = f"⬆ {old} → v{st['package_version']}"
+        else:
+            skill_cell = f"✓ v{st['version']}"
+        rows.append({"tool": t.label, "connection": conn, "skill": skill_cell})
+    return rows
+
+
+def _skill_state_for(target: SetupTarget) -> dict:
+    """Skill version state for a target, keyed by its skill tool id."""
+    tool = target.skill_id or target.id
+    return skill.skill_version_state(tool, "user")
+
+
+def _flow_status() -> int:
+    """Show a table of detected tools with connection + skill state."""
+    detected = [t for t in scan_mcp_targets() if t.installed]
+    if not detected:
+        console.print("[yellow]No supported AI tools detected on your system.[/yellow]")
+        return 0
+    rows = build_status_rows(detected, _skill_state_for)
+    table = Table(title="Your AI Tools", padding=(0, 2))
+    table.add_column("Tool", style="bold")
+    table.add_column("Connection (MCP)", justify="center")
+    table.add_column("Skill", justify="center")
+    for r in rows:
+        table.add_row(r["tool"], r["connection"], r["skill"])
+    console.print()
+    console.print(table)
+    console.print("[dim]Only tools found on your machine are shown.[/dim]")
+    return 0
+
+
+def _flow_skill_add() -> int:
+    """Standalone 'Add the skill' door (scope + skill picker, no MCP step)."""
+    return 0 if _flow_skill_offer([]) else 130
 
 
 def run_setup_wizard() -> int:
@@ -288,9 +370,11 @@ def run_setup_wizard() -> int:
         choice = questionary.select(
             "What would you like to do?",
             choices=[
-                "Add — configure Gemini Notebook MCP for installed tools",
-                "Remove — remove MCP entries or skills",
-                "Get JSON for another tool — generate snippet for custom tools",
+                "Show my tools' status",
+                "Add the MCP to my tools",
+                "Add the skill to my tools",
+                "Remove an MCP or skill",
+                "Copy MCP setup for a tool not listed",
                 "Exit",
             ],
         ).ask()
@@ -298,11 +382,15 @@ def run_setup_wizard() -> int:
         if choice is None or choice == "Exit":
             return 130 if choice is None else 0
 
-        if choice.startswith("Add"):
+        if choice.startswith("Show"):
+            return _flow_status()
+        elif choice.startswith("Add the MCP"):
             return _flow_add()
+        elif choice.startswith("Add the skill"):
+            return _flow_skill_add()
         elif choice.startswith("Remove"):
             return _flow_remove()
-        elif choice.startswith("Get JSON"):
+        elif choice.startswith("Copy"):
             return _flow_json()
 
     except KeyboardInterrupt:
@@ -310,6 +398,25 @@ def run_setup_wizard() -> int:
         return 130
 
     return 0
+
+
+def build_connect_rows(detected: list[SetupTarget]) -> list[PickerRow]:
+    """Group detected tools for the connect picker; no paths, plain repair note."""
+    needs_fix: list[PickerRow] = []
+    not_yet: list[PickerRow] = []
+    already: list[PickerRow] = []
+    for t in detected:
+        if t.repair_reason:
+            needs_fix.append(
+                PickerRow("Needs a fix", t.label, t.id, checked=True, note="⚠ quick fix needed")
+            )
+        elif not t.configured:
+            not_yet.append(PickerRow("Not connected yet", t.label, t.id, checked=True))
+        else:
+            already.append(
+                PickerRow("Already connected", t.label, t.id, disabled="already connected")
+            )
+    return needs_fix + not_yet + already
 
 
 def _flow_add() -> int:
@@ -323,24 +430,10 @@ def _flow_add() -> int:
         console.print("You can still install the skill for a detected skill-capable tool.")
         return 0 if _flow_skill_offer([]) else 130
 
-    # Build questionary checkbox choices
-    choices = [questionary.Choice(title="Select all detected", value="__all__")]
-    for t in detected:
-        status_tag = " (already configured)" if t.configured else " (detected)"
-        if t.repair_reason:
-            status_tag = f" (needs repair: {t.repair_reason})"
-        dest_tag = f" — {t.destination}" if t.destination else ""
-        choices.append(
-            questionary.Choice(
-                title=f"{t.label}{status_tag}{dest_tag}",
-                value=t.id,
-                checked=not t.configured or bool(t.repair_reason),
-            )
-        )
-
+    console.print(f"[dim]{LEGEND_SELECT}[/dim]")
     selected = questionary.checkbox(
-        "Select tools to configure for Gemini Notebook MCP:",
-        choices=choices,
+        "Select which tools to connect:",
+        choices=rows_to_choices(build_connect_rows(detected)),
     ).ask()
 
     if selected is None:
@@ -351,41 +444,68 @@ def _flow_add() -> int:
         console.print("[dim]No tools selected.[/dim]")
         return 0 if _flow_skill_offer([]) else 130
 
-    if "__all__" in selected:
-        selected = [target.id for target in detected]
-
     results = run_add(selected)
-    _display_results_summary("MCP Setup Results", results)
+    _display_results_summary("Connection Results", results)
 
     # Offer optional skill
-    return 0 if _flow_skill_offer(selected) else 130
+    return 0 if _flow_skill_offer(selected, post_connect=True) else 130
 
 
-def _flow_skill_offer(selected_mcp_ids: list[str]) -> bool:
-    """Offer optional skill installation after MCP setup."""
-    console.print("\n[bold]Optional: Install NotebookLM Skill[/bold]")
-    console.print("Provides prompt instructions, reference docs, and workflows to AI agents.\n")
+def build_skill_rows(tool_options, level: str, selected_mcp_ids: list[str]) -> list[PickerRow]:
+    """Rows for the skill picker: no paths, shared-file note, version/upgrade flags."""
+    rows: list[PickerRow] = []
+    seen: set[Path] = set()
+    for tool_key, label, mcp_keys in tool_options:
+        dest = skill.get_skill_destination(tool_key, level)
+        if not dest or dest in seen:
+            continue
+        installed = any(setup._detect_tool(k) for k in mcp_keys) or skill._is_tool_installed(
+            tool_key
+        )
+        if not installed:
+            continue
+        seen.add(dest)
+        state = skill.skill_version_state(tool_key, level)
+        row_label = f"{label}   · one shared file covers these" if tool_key == "agents" else label
+        if state["upgrade_available"]:
+            note = "· upgrade available"
+        elif state["installed"] and state["version"]:
+            note = f"· v{state['version']} installed"
+        else:
+            note = None
+        checked = any(k in selected_mcp_ids for k in mcp_keys) or state["upgrade_available"]
+        rows.append(PickerRow(None, row_label, tool_key, checked=checked, note=note))
+    return rows
 
-    want_skill = questionary.confirm(
-        "Would you like to install the NotebookLM skill?", default=True
-    ).ask()
+
+def _flow_skill_offer(selected_mcp_ids: list[str], post_connect: bool = False) -> bool:
+    """Offer skill installation. Used standalone and as a post-connect follow-up."""
+    console.print("\n[bold]Gemini Notebook skill[/bold]")
+    console.print("Teaches your AI tools how to use Gemini Notebook well.\n")
+
+    prompt = (
+        "Connection added. Also add the skill? (recommended)"
+        if post_connect
+        else "Add the skill? (recommended)"
+    )
+    want_skill = questionary.confirm(prompt, default=True).ask()
     if want_skill is None:
         return False
     if not want_skill:
         return True
 
     level_choice = questionary.select(
-        "Installation scope:",
+        "Where should the skill live?",
         choices=[
-            "All projects (user level) [recommended]",
-            "This folder (project level)",
+            "All my projects      (recommended)",
+            "Just this folder",
         ],
     ).ask()
 
     if level_choice is None:
         return False
 
-    level = "user" if "user" in level_choice else "project"
+    level = "user" if "projects" in level_choice else "project"
 
     # Determine eligible tools
     # Deduplicate shared targets: codex, chatgpt-desktop, gemini-cli all share "agents"
@@ -400,37 +520,20 @@ def _flow_skill_offer(selected_mcp_ids: list[str]) -> bool:
         ("openclaw", "OpenClaw framework", ["openclaw"]),
     ]
 
-    skill_choices = [
-        questionary.Choice(title="Select all detected skill-capable tools", value="__all__")
-    ]
-    seen_destinations: set[Path] = set()
-    for tool_key, label, mcp_keys in tool_options:
-        dest = skill.get_skill_destination(tool_key, level)
-        if not dest or dest in seen_destinations:
-            continue
-        is_installed = any(setup._detect_tool(k) for k in mcp_keys) or skill._is_tool_installed(
-            tool_key
-        )
-        if is_installed:
-            seen_destinations.add(dest)
-            prechecked = any(k in selected_mcp_ids for k in mcp_keys)
-            skill_choices.append(
-                questionary.Choice(title=f"{label} ({dest})", value=tool_key, checked=prechecked)
-            )
+    skill_rows = build_skill_rows(tool_options, level, selected_mcp_ids)
 
-    if len(skill_choices) == 1:
+    if not skill_rows:
         console.print("[dim]No detected tools support local skill files.[/dim]")
         return True
 
+    console.print(f"[dim]{LEGEND_SELECT}[/dim]")
     chosen_skills = questionary.checkbox(
-        "Install skill for which tools?", choices=skill_choices
+        "Add the skill to which tools?", choices=rows_to_choices(skill_rows)
     ).ask()
     if chosen_skills is None:
         return False
     if not chosen_skills:
         return True
-    if "__all__" in chosen_skills:
-        chosen_skills = [choice.value for choice in skill_choices if choice.value != "__all__"]
 
     skill_results = []
     for sk in chosen_skills:
@@ -724,6 +827,19 @@ def run_remove(selected: list[str]) -> list[SetupResult]:
     return results
 
 
+def build_remove_rows(targets: list[SetupTarget]) -> list[PickerRow]:
+    """Group removable targets into MCP connections and Skills; opt-in, short paths."""
+    mcp_rows: list[PickerRow] = []
+    skill_rows: list[PickerRow] = []
+    for t in targets:
+        note = str(t.destination).replace(str(Path.home()), "~") if t.destination else None
+        if t.id.startswith("skill:"):
+            skill_rows.append(PickerRow("Skills", t.label, t.id, note=note))
+        else:
+            mcp_rows.append(PickerRow("MCP connections", t.label, t.id, note=note))
+    return mcp_rows + skill_rows
+
+
 def _flow_remove() -> int:
     """Interactively select and remove MCP configurations and skills."""
     targets = scan_removable()
@@ -731,15 +847,11 @@ def _flow_remove() -> int:
         console.print("[dim]No Gemini Notebook MCP entries or skills found to remove.[/dim]")
         return 0
 
-    choices = [questionary.Choice(title="Select all found", value="__all__")]
-    for t in targets:
-        dest_str = str(t.destination).replace(str(Path.home()), "~") if t.destination else ""
-        choices.append(questionary.Choice(title=f"{t.label} ({dest_str})", value=t.id))
-
     try:
+        console.print(f"[dim]{LEGEND_REMOVE}[/dim]")
         selected_labels = questionary.checkbox(
-            "Select MCP entries and skills to remove:",
-            choices=choices,
+            "Select what to remove:",
+            choices=rows_to_choices(build_remove_rows(targets)),
         ).ask()
 
         if selected_labels is None:
@@ -748,11 +860,8 @@ def _flow_remove() -> int:
             console.print("[dim]No items selected for removal.[/dim]")
             return 0
 
-        if "__all__" in selected_labels:
-            selected_ids = [t.id for t in targets]
-        else:
-            known_ids = {target.id for target in targets}
-            selected_ids = [target_id for target_id in selected_labels if target_id in known_ids]
+        known_ids = {target.id for target in targets}
+        selected_ids = [target_id for target_id in selected_labels if target_id in known_ids]
 
         results = run_remove(selected_ids)
         _display_results_summary("Removal Results", results)
