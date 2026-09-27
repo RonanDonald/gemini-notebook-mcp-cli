@@ -393,6 +393,35 @@ def _flow_add() -> int:
     return 0 if _flow_skill_offer(selected) else 130
 
 
+def build_skill_rows(tool_options, level: str, selected_mcp_ids: list[str]) -> list[PickerRow]:
+    """Rows for the skill picker: no paths, shared-file note, version/upgrade flags."""
+    rows: list[PickerRow] = []
+    seen: set[Path] = set()
+    for tool_key, label, mcp_keys in tool_options:
+        dest = skill.get_skill_destination(tool_key, level)
+        if not dest or dest in seen:
+            continue
+        installed = any(setup._detect_tool(k) for k in mcp_keys) or skill._is_tool_installed(
+            tool_key
+        )
+        if not installed:
+            continue
+        seen.add(dest)
+        state = skill.skill_version_state(tool_key, level)
+        row_label = (
+            f"{label}   · one shared file covers these" if tool_key == "agents" else label
+        )
+        if state["upgrade_available"]:
+            note = "· upgrade available"
+        elif state["installed"] and state["version"]:
+            note = f"· v{state['version']} installed"
+        else:
+            note = None
+        checked = any(k in selected_mcp_ids for k in mcp_keys) or state["upgrade_available"]
+        rows.append(PickerRow(None, row_label, tool_key, checked=checked, note=note))
+    return rows
+
+
 def _flow_skill_offer(selected_mcp_ids: list[str]) -> bool:
     """Offer optional skill installation after MCP setup."""
     console.print("\n[bold]Optional: Install NotebookLM Skill[/bold]")
@@ -407,17 +436,17 @@ def _flow_skill_offer(selected_mcp_ids: list[str]) -> bool:
         return True
 
     level_choice = questionary.select(
-        "Installation scope:",
+        "Where should the skill live?",
         choices=[
-            "All projects (user level) [recommended]",
-            "This folder (project level)",
+            "All my projects      (recommended)",
+            "Just this folder",
         ],
     ).ask()
 
     if level_choice is None:
         return False
 
-    level = "user" if "user" in level_choice else "project"
+    level = "user" if "projects" in level_choice else "project"
 
     # Determine eligible tools
     # Deduplicate shared targets: codex, chatgpt-desktop, gemini-cli all share "agents"
@@ -432,37 +461,20 @@ def _flow_skill_offer(selected_mcp_ids: list[str]) -> bool:
         ("openclaw", "OpenClaw framework", ["openclaw"]),
     ]
 
-    skill_choices = [
-        questionary.Choice(title="Select all detected skill-capable tools", value="__all__")
-    ]
-    seen_destinations: set[Path] = set()
-    for tool_key, label, mcp_keys in tool_options:
-        dest = skill.get_skill_destination(tool_key, level)
-        if not dest or dest in seen_destinations:
-            continue
-        is_installed = any(setup._detect_tool(k) for k in mcp_keys) or skill._is_tool_installed(
-            tool_key
-        )
-        if is_installed:
-            seen_destinations.add(dest)
-            prechecked = any(k in selected_mcp_ids for k in mcp_keys)
-            skill_choices.append(
-                questionary.Choice(title=f"{label} ({dest})", value=tool_key, checked=prechecked)
-            )
+    skill_rows = build_skill_rows(tool_options, level, selected_mcp_ids)
 
-    if len(skill_choices) == 1:
+    if not skill_rows:
         console.print("[dim]No detected tools support local skill files.[/dim]")
         return True
 
+    console.print(f"[dim]{LEGEND_SELECT}[/dim]")
     chosen_skills = questionary.checkbox(
-        "Install skill for which tools?", choices=skill_choices
+        "Add the skill to which tools?", choices=rows_to_choices(skill_rows)
     ).ask()
     if chosen_skills is None:
         return False
     if not chosen_skills:
         return True
-    if "__all__" in chosen_skills:
-        chosen_skills = [choice.value for choice in skill_choices if choice.value != "__all__"]
 
     skill_results = []
     for sk in chosen_skills:

@@ -144,7 +144,7 @@ def test_flow_add_returns_cancel_status_from_skill_prompt(monkeypatch):
     assert setup_wizard._flow_add() == 130
 
 
-def test_skill_offer_select_all_installs_shared_destination_once(monkeypatch, tmp_path):
+def test_skill_offer_dedups_shared_destination(monkeypatch, tmp_path):
     destination = tmp_path / "nlm-skill"
     monkeypatch.setattr(
         skill,
@@ -161,15 +161,15 @@ def test_skill_offer_select_all_installs_shared_destination_once(monkeypatch, tm
     monkeypatch.setattr(
         setup_wizard.questionary,
         "select",
-        lambda *args, **kwargs: SimpleNamespace(ask=lambda: "This folder (project level)"),
+        lambda *args, **kwargs: SimpleNamespace(ask=lambda: "Just this folder"),
     )
     choices_seen = []
 
-    def choose_all(*args, **kwargs):
+    def capture_checkbox(*args, **kwargs):
         choices_seen.extend(kwargs["choices"])
-        return SimpleNamespace(ask=lambda: ["__all__"])
+        return SimpleNamespace(ask=lambda: ["agents"])
 
-    monkeypatch.setattr(setup_wizard.questionary, "checkbox", choose_all)
+    monkeypatch.setattr(setup_wizard.questionary, "checkbox", capture_checkbox)
     installed = []
     monkeypatch.setattr(
         skill,
@@ -182,7 +182,10 @@ def test_skill_offer_select_all_installs_shared_destination_once(monkeypatch, tm
 
     setup_wizard._flow_skill_offer([])
 
-    assert any(choice.value == "__all__" for choice in choices_seen)
+    # No select-all pseudo-choice; shared destination listed once (agents, not antigravity)
+    assert not any(getattr(c, "value", None) == "__all__" for c in choices_seen)
+    real_values = [getattr(c, "value", None) for c in choices_seen if hasattr(c, "value")]
+    assert "antigravity" not in real_values
     assert installed == [("agents", "project")]
 
 
@@ -603,3 +606,27 @@ def test_results_summary_has_no_path_dump(capsys):
     assert "Backup for" not in out
     assert "config.toml.bak" not in out
     assert "backed up" in out.lower()
+
+def test_build_skill_rows_flags_upgrade_and_shared(monkeypatch):
+    monkeypatch.setattr(skill, "get_skill_destination", lambda t, l: Path(f"/skills/{t}"))
+    monkeypatch.setattr(setup_wizard.setup, "_detect_tool", lambda k: True)
+    monkeypatch.setattr(skill, "_is_tool_installed", lambda t: True)
+    states = {
+        "agents": {"supported": True, "installed": True, "version": "0.0.1", "package_version": "9.9.9", "upgrade_available": True},
+        "claude-code": {"supported": True, "installed": True, "version": "9.9.9", "package_version": "9.9.9", "upgrade_available": False},
+    }
+    default = {"supported": True, "installed": False, "version": None, "package_version": "9.9.9", "upgrade_available": False}
+    monkeypatch.setattr(skill, "skill_version_state", lambda t, l: states.get(t, default))
+    options = [
+        ("agents", "Agents / Codex / ChatGPT / Gemini CLI", ["codex", "gemini"]),
+        ("claude-code", "Claude Code CLI", ["claude-code"]),
+    ]
+    rows = setup_wizard.build_skill_rows(options, "user", selected_mcp_ids=[])
+    by_value = {r.value: r for r in rows}
+    assert "shared file" in by_value["agents"].label
+    assert "upgrade available" in (by_value["agents"].note or "")
+    assert by_value["agents"].checked is True
+    assert "installed" in (by_value["claude-code"].note or "")
+    assert by_value["claude-code"].checked is False
+    # no full path in the label
+    assert "/skills/" not in by_value["agents"].label
