@@ -526,7 +526,7 @@ def test_flow_remove_ctrl_c_returns_130_with_partial_summary(monkeypatch, tmp_pa
     monkeypatch.setattr(
         setup_wizard.questionary,
         "checkbox",
-        lambda *args, **kwargs: SimpleNamespace(ask=lambda: ["__all__"]),
+        lambda *args, **kwargs: SimpleNamespace(ask=lambda: ["tool1", "tool2"]),
     )
     monkeypatch.setattr(
         setup_wizard.questionary,
@@ -630,3 +630,19 @@ def test_build_skill_rows_flags_upgrade_and_shared(monkeypatch):
     assert by_value["claude-code"].checked is False
     # no full path in the label
     assert "/skills/" not in by_value["agents"].label
+
+def test_build_remove_rows_groups_and_opts_in(monkeypatch, tmp_path):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    targets = [
+        setup_wizard.SetupTarget("cursor", "Cursor", True, True, tmp_path / ".cursor/mcp.json", "cursor"),
+        setup_wizard.SetupTarget(
+            "skill:agents:user", "nlm-skill (shared) [user]", True, True, tmp_path / ".codex/skill", "agents"
+        ),
+    ]
+    rows = setup_wizard.build_remove_rows(targets)
+    by_value = {r.value: r for r in rows}
+    assert by_value["cursor"].group == "MCP connections"
+    assert by_value["cursor"].checked is False
+    assert by_value["cursor"].note.startswith("~")
+    assert by_value["skill:agents:user"].group == "Skills"
+    assert by_value["skill:agents:user"].checked is False

@@ -768,6 +768,19 @@ def run_remove(selected: list[str]) -> list[SetupResult]:
     return results
 
 
+def build_remove_rows(targets: list[SetupTarget]) -> list[PickerRow]:
+    """Group removable targets into MCP connections and Skills; opt-in, short paths."""
+    mcp_rows: list[PickerRow] = []
+    skill_rows: list[PickerRow] = []
+    for t in targets:
+        note = str(t.destination).replace(str(Path.home()), "~") if t.destination else None
+        if t.id.startswith("skill:"):
+            skill_rows.append(PickerRow("Skills", t.label, t.id, note=note))
+        else:
+            mcp_rows.append(PickerRow("MCP connections", t.label, t.id, note=note))
+    return mcp_rows + skill_rows
+
+
 def _flow_remove() -> int:
     """Interactively select and remove MCP configurations and skills."""
     targets = scan_removable()
@@ -775,15 +788,11 @@ def _flow_remove() -> int:
         console.print("[dim]No Gemini Notebook MCP entries or skills found to remove.[/dim]")
         return 0
 
-    choices = [questionary.Choice(title="Select all found", value="__all__")]
-    for t in targets:
-        dest_str = str(t.destination).replace(str(Path.home()), "~") if t.destination else ""
-        choices.append(questionary.Choice(title=f"{t.label} ({dest_str})", value=t.id))
-
     try:
+        console.print(f"[dim]{LEGEND_REMOVE}[/dim]")
         selected_labels = questionary.checkbox(
-            "Select MCP entries and skills to remove:",
-            choices=choices,
+            "Select what to remove:",
+            choices=rows_to_choices(build_remove_rows(targets)),
         ).ask()
 
         if selected_labels is None:
@@ -792,11 +801,8 @@ def _flow_remove() -> int:
             console.print("[dim]No items selected for removal.[/dim]")
             return 0
 
-        if "__all__" in selected_labels:
-            selected_ids = [t.id for t in targets]
-        else:
-            known_ids = {target.id for target in targets}
-            selected_ids = [target_id for target_id in selected_labels if target_id in known_ids]
+        known_ids = {target.id for target in targets}
+        selected_ids = [target_id for target_id in selected_labels if target_id in known_ids]
 
         results = run_remove(selected_ids)
         _display_results_summary("Removal Results", results)
