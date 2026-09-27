@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.1] - Unreleased
+
+### Fixed
+
+- Retry transient Google media 404s when downloading newly completed videos; report an uncertain media availability error after retries.
+- Explain permission-denied collaborator invites without guessing which account or domain restriction applied.
+- Build notebook links from the authenticated profile's host across notebook, Studio, and sharing outputs.
+- **Drive-imported files in Drive status ([#337](https://github.com/jacob-bd/gemini-notebook-mcp-cli/issues/337))** — Read type-14 Drive IDs so Drive-picker files appear in `source_list_drive` and are eligible for manual sync. Direct uploads without Drive metadata remain excluded; an eligible source can still fail a sync attempt.
+
+### Improved
+
+- Count queued artifacts separately in Studio status summaries. Queue position and ETA remain unavailable from the upstream response.
+- Guide MCP and CLI agents on profile selection, download readiness, path boundaries, report timeouts, and sharing errors.
+
 ## [0.12.0] - 2026-09-24
 
 Adds support for Gemini Notebook's new Interactive Reports, built for AI

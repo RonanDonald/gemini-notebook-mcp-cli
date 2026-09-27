@@ -244,6 +244,13 @@ List all sources in notebook [notebook_id] and check their Drive freshness statu
 `nlm source list [notebook_id] --drive --skip-freshness`. Expected: sources are listed
 without per-source freshness checks; stale status may be unknown.
 
+**Drive-picker file variant:** Include a PDF, text, Markdown, Word, or PowerPoint file
+that was imported from Google Drive. Expected: type-14 files with Drive metadata appear
+in `drive_sources` with their Drive IDs and `can_sync: true`; directly uploaded type-14
+files without that metadata remain in `other_sources`. `can_sync` marks eligibility to
+attempt a manual sync, not a guarantee that every source's RPC will succeed. Only
+manually sync entries the tool marks `can_sync: true`.
+
 **Save:** Note a `source_id` for next tests.
 
 ---
