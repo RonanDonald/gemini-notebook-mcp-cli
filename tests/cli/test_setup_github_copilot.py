@@ -56,7 +56,7 @@ class TestSetupGitHubCopilot:
         assert MCP_SERVER_NAME in config["servers"]
         assert "notebooklm-mcp" not in config["servers"]
         entry = config["servers"][MCP_SERVER_NAME]
-        assert entry["command"] == MCP_SERVER_CMD
+        assert entry["command"] == setup._default_server_command()
         assert entry["args"] == []
 
     def test_preserves_existing_config_keys(self, tmp_path):

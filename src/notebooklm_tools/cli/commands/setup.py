@@ -67,6 +67,15 @@ def _find_mcp_server_path() -> str | None:
     return shutil.which(MCP_SERVER_CMD)
 
 
+def _default_server_command() -> str:
+    """Full path to notebooklm-mcp when resolvable, else the bare command name.
+
+    Desktop apps and some GUIs do not inherit the shell PATH, so the full path
+    is the reliable default. Falls back to the bare name when detection fails.
+    """
+    return _find_mcp_server_path() or MCP_SERVER_CMD
+
+
 def _read_json_config(path: Path) -> dict:
     """Read a JSON config file, returning empty dict if missing.
 
@@ -166,7 +175,7 @@ def _cli_output_contains_mcp(output: str) -> bool:
 def _add_mcp_server(config: dict, key: str = MCP_SERVER_NAME, extra: dict | None = None) -> dict:
     """Add Gemini Notebook MCP to an ``mcpServers`` config dict."""
     config.setdefault("mcpServers", {})
-    entry = {"command": MCP_SERVER_CMD, "args": []}
+    entry = {"command": _default_server_command(), "args": []}
     if extra:
         entry.update(extra)
     config["mcpServers"][key] = entry
@@ -184,7 +193,7 @@ def _add_vscode_mcp_server(
 ) -> dict:
     """Add Gemini Notebook MCP to a VS Code/Copilot ``servers`` config dict."""
     config.setdefault("servers", {})
-    entry = {"command": MCP_SERVER_CMD, "args": []}
+    entry = {"command": _default_server_command(), "args": []}
     if extra:
         entry.update(extra)
     config["servers"][key] = entry
@@ -674,14 +683,14 @@ def _setup_claude_code() -> bool:
         console.print()
         console.print("  Manual setup — add to [dim]~/.claude.json[/dim]:")
         console.print(
-            f'    "mcpServers": {{ "{MCP_SERVER_NAME}": {{ "command": "{MCP_SERVER_CMD}" }} }}'
+            f'    "mcpServers": {{ "{MCP_SERVER_NAME}": {{ "command": "{_default_server_command()}" }} }}'
         )
         return False
 
     try:
         backup_existing(config_path, label="claude-code-config")
         result = subprocess.run(
-            [claude_cmd, "mcp", "add", "-s", "user", MCP_SERVER_NAME, "--", MCP_SERVER_CMD],
+            [claude_cmd, "mcp", "add", "-s", "user", MCP_SERVER_NAME, "--", _default_server_command()],
             capture_output=True,
             text=True,
             timeout=10,
@@ -1072,7 +1081,7 @@ def _edit_codex_entry(
             entry = tomlkit.table()
             servers[MCP_SERVER_NAME] = entry
 
-        entry["command"] = command or MCP_SERVER_CMD
+        entry["command"] = command or _default_server_command()
         entry["args"] = []
         entry["tool_timeout_sec"] = 300
 
@@ -1197,7 +1206,7 @@ def _setup_opencode() -> bool:
 
     mcp[MCP_SERVER_NAME] = {
         "type": "local",
-        "command": [MCP_SERVER_CMD],
+        "command": [_default_server_command()],
         "enabled": True,
         "timeout": OPENCODE_MCP_TIMEOUT_MS,
     }
