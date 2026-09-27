@@ -314,7 +314,12 @@ def _is_copilot_configured(scope: str = "project") -> bool:
         config = _read_json_config(config_path)
         return _is_vscode_mcp_configured(config)
     except Exception:
-        return False
+        # Fallback for JSONC: check if file text contains MCP server name
+        try:
+            raw = config_path.read_text(encoding="utf-8")
+            return any(name in raw for name in (MCP_SERVER_NAME, *LEGACY_MCP_SERVER_NAMES))
+        except Exception:
+            return False
 
 
 def _claude_desktop_msix_package_dir() -> Path | None:

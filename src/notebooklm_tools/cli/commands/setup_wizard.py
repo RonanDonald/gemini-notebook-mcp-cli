@@ -399,8 +399,231 @@ def _flow_json() -> int:
     return 0
 
 
+def scan_removable() -> list[SetupTarget]:
+    """Scan the system for removable Gemini Notebook MCP entries and skills."""
+    targets: list[SetupTarget] = []
+
+    # 1. Claude Desktop profiles
+    try:
+        profiles = setup._claude_desktop_profile_paths()
+        for p_name, p_path in profiles.items():
+            if p_path.exists():
+                try:
+                    cfg = setup._read_json_config(p_path)
+                    if setup._is_configured(cfg):
+                        targets.append(
+                            SetupTarget(
+                                id=f"claude-desktop:{p_name}",
+                                label=f"Claude Desktop ({p_name})",
+                                installed=True,
+                                configured=True,
+                                destination=p_path,
+                                skill_id=None,
+                            )
+                        )
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # 2. Claude Code
+    try:
+        if setup._is_already_configured("claude-code"):
+            targets.append(
+                SetupTarget(
+                    id="claude-code",
+                    label="Claude Code",
+                    installed=True,
+                    configured=True,
+                    destination=Path.home() / ".claude.json",
+                    skill_id="claude-code",
+                )
+            )
+    except Exception:
+        pass
+
+    # 3. Codex CLI / ChatGPT desktop
+    try:
+        if setup._is_already_configured("codex"):
+            targets.append(
+                SetupTarget(
+                    id="codex",
+                    label="Codex CLI / ChatGPT desktop",
+                    installed=True,
+                    configured=True,
+                    destination=setup._codex_config_path() / "config.toml",
+                    skill_id="codex",
+                )
+            )
+    except Exception:
+        pass
+
+    # 4. GitHub Copilot (user and project scopes)
+    for scope in ("user", "project"):
+        try:
+            if setup._is_copilot_configured(scope=scope):
+                dest = setup._github_copilot_config_path(scope=scope)
+                scope_label = "user profile" if scope == "user" else "project"
+                targets.append(
+                    SetupTarget(
+                        id=f"github-copilot:{scope}",
+                        label=f"GitHub Copilot ({scope_label})",
+                        installed=True,
+                        configured=True,
+                        destination=dest,
+                        skill_id=None,
+                    )
+                )
+        except Exception:
+            pass
+
+    # 5. Standard JSON clients (excluding alef-agent)
+    standard_clients = [
+        ("cursor", "Cursor", setup._cursor_config_path),
+        ("windsurf", "Windsurf", setup._windsurf_config_path),
+        ("cline", "Cline", setup._cline_config_path),
+        ("antigravity", "Antigravity", setup._antigravity_config_path),
+        ("gemini", "Gemini CLI", setup._gemini_config_path),
+        ("opencode", "OpenCode", setup._opencode_config_path),
+    ]
+    for cid, label, path_fn in standard_clients:
+        try:
+            if setup._is_already_configured(cid):
+                targets.append(
+                    SetupTarget(
+                        id=cid,
+                        label=label,
+                        installed=True,
+                        configured=True,
+                        destination=path_fn(),
+                        skill_id=cid,
+                    )
+                )
+        except Exception:
+            pass
+
+    # 6. Skills (user and project scopes; exclude alef-agent)
+    skill_tools = [
+        ("agents", "nlm-skill (shared: Codex, ChatGPT, Gemini, Antigravity)"),
+        ("claude-code", "nlm-skill (Claude Code)"),
+        ("cursor", "nlm-skill (Cursor)"),
+        ("opencode", "nlm-skill (OpenCode)"),
+    ]
+    seen_destinations: set[Path] = set()
+    for tool_name, desc_prefix in skill_tools:
+        for level in ("user", "project"):
+            try:
+                installed, path = skill.check_install_status(tool_name, level)
+                if installed and path and path not in seen_destinations:
+                    seen_destinations.add(path)
+                    targets.append(
+                        SetupTarget(
+                            id=f"skill:{tool_name}:{level}",
+                            label=f"{desc_prefix} [{level}]",
+                            installed=True,
+                            configured=True,
+                            destination=path,
+                            skill_id=tool_name,
+                        )
+                    )
+            except Exception:
+                pass
+
+    return targets
+
+
+def remove_mcp_targets(targets: list[SetupTarget]) -> list[SetupResult]:
+    """Safely remove selected MCP targets with backups and error isolation."""
+    results = []
+    for target in targets:
+        client, _, profile = target.id.partition(":")
+        with capture_backups() as recorded:
+            try:
+                scope = profile if profile in ("user", "project") else ("user" if client == "github-copilot" else "project")
+                prof = profile if profile not in ("user", "project") else None
+                removed = setup._remove_single(
+                    client,
+                    profile=prof,
+                    scope=scope,
+                )
+                status, message = ("removed", "Removed") if removed else ("failed", "Removal failed")
+            except (OSError, ConfigParseError, ValueError) as exc:
+                status, message = "failed", str(exc)
+        results.append(SetupResult(target.id, status, target.destination, tuple(recorded), message))
+    return results
+
+
+def remove_skill_targets(targets: list[SetupTarget]) -> list[SetupResult]:
+    """Safely remove selected skill targets with directory backups."""
+    results = []
+    for target in targets:
+        _, tool, level = target.id.split(":", 2)
+        outcome = skill.skill_action(tool, level, "remove", confirm_replace=lambda _: True)
+        backups = (outcome.backup_path,) if outcome.backup_path else ()
+        results.append(SetupResult(target.id, outcome.status, target.destination, backups, outcome.message))
+    return results
+
+
+def skipped(targets: list[SetupTarget]) -> list[SetupResult]:
+    """Return skipped results for cancelled targets."""
+    return [SetupResult(t.id, "skipped", t.destination, (), "Cancelled") for t in targets]
+
+
+def run_remove(selected: list[str]) -> list[SetupResult]:
+    """Run removal on selected target IDs with two-stage confirmation."""
+    all_removable = {t.id: t for t in scan_removable()}
+    mcp_targets = [all_removable[i] for i in selected if i in all_removable and not i.startswith("skill:")]
+    skill_targets = [all_removable[i] for i in selected if i in all_removable and i.startswith("skill:")]
+    results = []
+    if mcp_targets:
+        allowed = questionary.confirm("Remove the selected MCP entries?", default=False).ask()
+        results.extend(remove_mcp_targets(mcp_targets) if allowed else skipped(mcp_targets))
+    if skill_targets:
+        allowed = questionary.confirm(
+            "Delete the listed skill folders? Personal edits in the active folders will be removed.",
+            default=False,
+        ).ask()
+        results.extend(remove_skill_targets(skill_targets) if allowed else skipped(skill_targets))
+    return results
+
+
 def _flow_remove() -> int:
-    """Removal flow stub for Task 6."""
-    from notebooklm_tools.cli.commands import setup as s
-    s._remove_all()
-    return 0
+    """Interactively select and remove MCP configurations and skills."""
+    targets = scan_removable()
+    if not targets:
+        console.print("[dim]No Gemini Notebook MCP entries or skills found to remove.[/dim]")
+        return 0
+
+    choices = ["Select all found"]
+    for t in targets:
+        dest_str = str(t.destination).replace(str(Path.home()), "~") if t.destination else ""
+        choices.append(f"{t.label} ({dest_str})")
+
+    try:
+        selected_labels = questionary.checkbox(
+            "Select MCP entries and skills to remove:",
+            choices=choices,
+        ).ask()
+
+        if selected_labels is None:
+            return 130
+        if not selected_labels:
+            console.print("[dim]No items selected for removal.[/dim]")
+            return 0
+
+        if "Select all found" in selected_labels:
+            selected_ids = [t.id for t in targets]
+        else:
+            selected_ids = []
+            for t in targets:
+                dest_str = str(t.destination).replace(str(Path.home()), "~") if t.destination else ""
+                expected_opt = f"{t.label} ({dest_str})"
+                if expected_opt in selected_labels or any(t.label in sel for sel in selected_labels):
+                    selected_ids.append(t.id)
+
+        results = run_remove(selected_ids)
+        _display_results_summary("Removal Results", results)
+        return 0
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Removal cancelled by user.[/yellow]")
+        return 130
