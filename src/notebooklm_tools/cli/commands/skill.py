@@ -3,13 +3,16 @@
 import os
 import re
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any, Callable, TypedDict
 
 import typer
+from packaging.version import InvalidVersion, Version
 from rich.table import Table
 
 from notebooklm_tools import __version__
+from notebooklm_tools.cli.setup_safety import backup_existing
 from notebooklm_tools.cli.utils import is_tool_on_system, make_console
 
 console = make_console()
@@ -37,6 +40,14 @@ class ToolConfig(TypedDict, total=False):
     binary: str
     root_dirs: list[Path]
     frontmatter_extras: dict[str, str]
+
+
+@dataclass(frozen=True)
+class SkillActionResult:
+    status: str  # "installed", "updated", "removed", "current", "newer", "skipped", "failed"
+    path: Path | None
+    backup_path: Path | None
+    message: str
 
 
 TOOL_CONFIGS: dict[str, ToolConfig] = {
@@ -77,6 +88,13 @@ TOOL_CONFIGS: dict[str, ToolConfig] = {
         "format": "skill.md",
         "description": "OpenAI Codex CLI",
         "binary": "codex",
+        "root_dirs": [_HOME / ".codex", _HOME / ".agents"],
+    },
+    "chatgpt-desktop": {
+        "user": _AGENTS_USER,
+        "project": _AGENTS_PROJECT,
+        "format": "skill.md",
+        "description": "ChatGPT desktop app (shared with Codex / Gemini CLI)",
         "root_dirs": [_HOME / ".codex", _HOME / ".agents"],
     },
     "opencode": {
@@ -157,6 +175,101 @@ def get_data_dir() -> Path:
         raise typer.Exit(1)
 
     return data_dir
+
+
+def get_skill_destination(tool: str, level: str = "user") -> Path | None:
+    """Resolve the target directory for a tool's skill, or None if not supported."""
+    if tool == "claude-desktop":
+        return None
+    config = TOOL_CONFIGS.get(tool)
+    if not config:
+        return None
+    return config.get(level)
+
+
+def skill_action(
+    tool: str,
+    level: str,
+    action: str,  # "install", "remove", "update"
+    *,
+    confirm_replace: Callable[[str], bool] | None = None,
+) -> SkillActionResult:
+    """Perform a safe skill action (install, update, remove) with backups and version checks."""
+    if level not in ("user", "project"):
+        return SkillActionResult("failed", None, None, f"Invalid level '{level}'. Must be 'user' or 'project'.")
+
+    if tool == "claude-desktop":
+        return SkillActionResult(
+            "failed",
+            None,
+            None,
+            "Claude Desktop uses account-based skills; local skills are not supported (MCP-only)."
+        )
+
+    if tool not in TOOL_CONFIGS:
+        return SkillActionResult("failed", None, None, f"Unknown tool '{tool}'")
+
+    config = TOOL_CONFIGS[tool]
+    install_path = get_skill_destination(tool, level)
+    if not install_path:
+        return SkillActionResult("failed", None, None, f"Tool '{tool}' does not support {level}-level installation.")
+
+    installed, _ = check_install_status(tool, level)
+
+    if action == "remove":
+        if not installed:
+            return SkillActionResult("skipped", install_path, None, f"Skill is not installed for {tool} at {level} level.")
+        if confirm_replace and not confirm_replace(f"Remove skill from {install_path}?"):
+            return SkillActionResult("skipped", install_path, None, "Removal declined.")
+
+        backup = None
+        try:
+            backup = backup_existing(install_path, label=f"skill-{tool}-{level}")
+            if install_path.exists():
+                shutil.rmtree(install_path)
+            return SkillActionResult("removed", install_path, backup, f"Removed {install_path}")
+        except (OSError, ValueError) as exc:
+            return SkillActionResult("failed", install_path, backup, f"Removal failed: {exc}")
+
+    # action is "install" or "update"
+    current_version = _get_installed_version(tool, level) if installed else None
+    try:
+        comparison = Version(current_version) if current_version else None
+    except InvalidVersion:
+        comparison = None
+
+    package_ver = Version(__version__)
+
+    if installed:
+        if comparison == package_ver:
+            return SkillActionResult("current", install_path, None, f"Skill is already at v{__version__}")
+        if comparison is not None and comparison > package_ver:
+            return SkillActionResult("newer", install_path, None, f"Installed skill (v{current_version}) is newer than package v{__version__}; preserved.")
+        if confirm_replace:
+            ver_label = f"v{current_version}" if current_version else "unversioned"
+            if not confirm_replace(f"Replace {ver_label} skill at {install_path} with v{__version__}?"):
+                return SkillActionResult("skipped", install_path, None, "Replacement declined.")
+
+        try:
+            backup = backup_existing(install_path, label=f"skill-{tool}-{level}")
+        except (OSError, ValueError) as exc:
+            return SkillActionResult("failed", install_path, None, f"Backup failed: {exc}")
+    else:
+        backup = None
+
+    format_type = config.get("format", "skill.md")
+    try:
+        if format_type == "skill.md":
+            install_skill_md(install_path, config.get("frontmatter_extras"))
+        elif format_type == "agents.md":
+            install_agents_md(install_path)
+        elif format_type == "all":
+            install_all_formats(install_path)
+
+        status = "updated" if (installed and current_version != __version__) else "installed"
+        return SkillActionResult(status, install_path, backup, f"Successfully {status} skill at {install_path}")
+    except Exception as exc:
+        return SkillActionResult("failed", install_path, backup, f"Installation failed: {exc}")
 
 
 def check_install_status(tool: str, level: str = "user") -> tuple[bool, Path | None]:

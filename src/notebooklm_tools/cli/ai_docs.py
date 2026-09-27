@@ -825,6 +825,7 @@ Checks: installation, authentication, browser profile, AI tool configs. Shows su
 
 **Setup** - Configure MCP server for AI tools:
 ```bash
+nlm setup                               # Guided interactive setup wizard (recommended)
 nlm setup list                          # Show all clients and their MCP status
 nlm setup add claude-code               # Add to Claude Code (via claude mcp add)
 nlm setup add claude-desktop            # Add to Claude Desktop config
@@ -852,9 +853,11 @@ or removing configuration; the CLI refuses to write while its executable is
 running. User-level skill installation likewise requires the target tool to be
 detected; use `--level project` for an intentional project-local install.
 
-**Supported Clients:** claude-code, claude-desktop, gemini, cursor, windsurf, cline, antigravity, codex
+**Supported Clients:** claude-code, claude-desktop, gemini, cursor, windsurf, cline, antigravity, codex, github-copilot, opencode
 
-**For other tools:** `nlm setup add json` launches an interactive wizard — choose uvx or regular mode, full path or command name, and existing or new config. The JSON is printed with syntax highlighting and can be copied to clipboard (macOS).
+**Guided Removal & Recovery:** Run `nlm setup` and choose **Remove** to safely remove MCP configurations and skills with separate default-No confirmations. Before any modification, backups are saved to `~/.notebooklm-mcp-cli/backups/`. Files with JSONC comments are safely preserved and reported for manual removal.
+
+**For other tools:** `nlm setup add json` launches an interactive wizard — choose uvx or regular mode, full path or command name, and existing or new config. The JSON is printed with syntax highlighting and can be copied to clipboard.
 
 ---
 

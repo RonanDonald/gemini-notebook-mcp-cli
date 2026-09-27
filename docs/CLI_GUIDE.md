@@ -334,13 +334,17 @@ nlm skill install alef-agent
 
 ### Setup (MCP Server Configuration)
 
-Configure the Gemini Notebook MCP server for AI tools in one command:
+Configure the Gemini Notebook MCP server and optional skills for AI tools:
 
-The configured server name is `gemini-notebook-mcp`; the executable remains
-`notebooklm-mcp` for compatibility with existing installations.
+Running bare `nlm setup` opens an interactive wizard that detects installed tools,
+configures MCP servers with private backups, and offers optional skill installation:
 
 ```bash
-nlm setup add claude-code       # Configure via `claude mcp add`
+nlm setup                       # Interactive wizard: Add, Remove, or Get JSON (recommended)
+nlm setup add claude-code       # Direct command: Configure via `claude mcp add`
+nlm setup add codex             # Direct command: Configure Codex CLI / ChatGPT desktop
+nlm setup add github-copilot --scope user  # Configure VS Code user profile
+nlm setup add github-copilot    # Configure workspace (.vscode/mcp.json)
 nlm setup add claude-desktop    # Configure detected Claude Desktop profile(s)
 nlm setup add claude-desktop --profile 3p  # Select Relay AI / 3P explicitly
 nlm setup remove claude-desktop --profile regular  # Remove from regular explicitly
@@ -368,6 +372,27 @@ MCP, including when it was launched by Relay AI. The CLI detects running
 regular and 3P instances and refuses to write while they are open, since Claude
 may rewrite the config and discard the change. Reopen Claude Desktop after the
 command completes.
+
+### Guided Removal & Safety
+
+Running `nlm setup` and selecting **Remove** scans all recognized MCP server
+configurations and installed skills, presenting an interactive checklist with
+**Select all found**.
+
+- **Separate Confirmations**: Removing MCP configurations requires an explicit
+  default-No confirmation (`Remove the selected MCP entries?`). Deleting skill
+  folders requires a separate default-No confirmation warning (`Delete the listed skill folders? Personal edits in the active folders will be removed.`).
+- **Claude Desktop Profiles**: Regular and Relay AI / 3P profiles appear as distinct
+  options and are removed cleanly without nested prompts.
+- **Backups & Recovery**: Before modifying any config file or deleting any skill
+  folder, a timestamped backup is saved to `~/.notebooklm-mcp-cli/backups/`. If a
+  backup cannot be created, the operation aborts safely. To restore a backup, copy
+  the backup file or directory from `~/.notebooklm-mcp-cli/backups/` back to its
+  original path.
+- **JSONC / Comment Preservation**: If a configuration file (such as VS Code's
+  user or workspace `mcp.json`) contains comments or custom formatting, `nlm setup`
+  safely refuses to modify it and prints the exact path with instructions for
+  manual removal.
 
 **Supported Clients:** `claude-code`, `claude-desktop`, `gemini`, `github-copilot`, `cursor`, `windsurf`, `cline`, `antigravity`, `codex`, `opencode`
 
