@@ -274,16 +274,16 @@ def _display_results_summary(title: str, results: list[SetupResult]) -> None:
     if not results:
         return
 
-    table = Table(title=title)
+    table = Table(title=title, padding=(0, 2))
     table.add_column("Target", style="bold")
     table.add_column("Status", justify="center")
-    table.add_column("Destination", style="dim")
     table.add_column("Notes")
 
+    any_backup = False
     for res in results:
         status_style = {
-            "configured": "[green]✓ configured[/green]",
-            "already": "[green]✓ already configured[/green]",
+            "configured": "[green]✓ connected[/green]",
+            "already": "[green]✓ already connected[/green]",
             "repaired": "[green]✓ repaired[/green]",
             "removed": "[green]✓ removed[/green]",
             "skipped": "[yellow]skipped[/yellow]",
@@ -291,19 +291,13 @@ def _display_results_summary(title: str, results: list[SetupResult]) -> None:
             "partial": "[yellow]⚠ partial[/yellow]",
         }.get(res.status, res.status)
 
-        dest_str = str(res.destination).replace(str(Path.home()), "~") if res.destination else "-"
-        notes = res.message
-        if res.backup_paths:
-            backup_str = ", ".join(p.name for p in res.backup_paths)
-            notes += f" [dim](backup: {backup_str})[/dim]"
-
-        table.add_row(res.id, status_style, dest_str, notes)
+        table.add_row(res.id, status_style, res.message)
+        any_backup = any_backup or bool(res.backup_paths)
 
     console.print()
     console.print(table)
-    for res in results:
-        for backup_path in res.backup_paths:
-            console.print(f"Backup for {res.id}: {backup_path}", markup=False, soft_wrap=True)
+    if any_backup:
+        console.print(f"\n[dim]{REASSURANCE_LINE}[/dim]")
 
 
 def run_setup_wizard() -> int:

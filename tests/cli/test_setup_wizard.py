@@ -88,15 +88,6 @@ def test_run_add_records_backups(tmp_path, monkeypatch):
     assert results[0].backup_paths[0].name.endswith("-gemini-backup")
 
 
-def test_result_summary_shows_full_backup_path(capsys, tmp_path):
-    backup = tmp_path / "backups" / "saved-config"
-    result = setup_wizard.SetupResult("codex", "configured", None, (backup,), "Configured")
-
-    setup_wizard._display_results_summary("Setup Results", [result])
-
-    assert str(backup) in capsys.readouterr().out
-
-
 def test_add_one_mcp_routes_copilot_to_user_scope(monkeypatch):
     called = []
     monkeypatch.setattr(
@@ -599,3 +590,16 @@ def test_build_connect_rows_groups_and_hides_paths():
     assert by_value["cursor"].group == "Already connected"
     assert by_value["cursor"].disabled == "already connected"
     assert by_value["cursor"].checked is False
+
+def test_results_summary_has_no_path_dump(capsys):
+    results = [
+        setup_wizard.SetupResult(
+            "codex", "configured", Path("/Users/me/.codex/config.toml"),
+            (Path("/Users/me/.codex/config.toml.bak"),), "Configured",
+        )
+    ]
+    setup_wizard._display_results_summary("Connection Results", results)
+    out = capsys.readouterr().out
+    assert "Backup for" not in out
+    assert "config.toml.bak" not in out
+    assert "backed up" in out.lower()
