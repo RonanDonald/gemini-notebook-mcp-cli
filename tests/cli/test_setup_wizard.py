@@ -114,7 +114,7 @@ def test_flow_add_passes_selected_targets_and_has_no_select_all_pseudo(monkeypat
     monkeypatch.setattr(setup_wizard.questionary, "checkbox", fake_checkbox)
     selected = []
     monkeypatch.setattr(setup_wizard, "run_add", lambda ids: selected.extend(ids) or [])
-    monkeypatch.setattr(setup_wizard, "_flow_skill_offer", lambda selected: True)
+    monkeypatch.setattr(setup_wizard, "_flow_skill_offer", lambda selected, **kwargs: True)
 
     assert setup_wizard._flow_add() == 0
     # No "select all" pseudo-choice anymore (questionary's <a> key handles it)
@@ -126,7 +126,7 @@ def test_flow_add_offers_skill_when_only_skill_capable_tools_exist(monkeypatch):
     monkeypatch.setattr(setup_wizard, "scan_mcp_targets", lambda: [])
     offers = []
     monkeypatch.setattr(
-        setup_wizard, "_flow_skill_offer", lambda selected: offers.append(selected) or True
+        setup_wizard, "_flow_skill_offer", lambda selected, **kwargs: offers.append(selected) or True
     )
 
     assert setup_wizard._flow_add() == 0
@@ -242,9 +242,7 @@ def test_add_interrupt_summarizes_completed_target(monkeypatch, capsys):
     monkeypatch.setattr(
         setup_wizard.questionary,
         "select",
-        lambda *args, **kwargs: SimpleNamespace(
-            ask=lambda: "Add — configure Gemini Notebook MCP for installed tools"
-        ),
+        lambda *args, **kwargs: SimpleNamespace(ask=lambda: "Add the MCP to my tools"),
     )
     monkeypatch.setattr(
         setup_wizard.questionary,
@@ -261,7 +259,7 @@ def test_add_interrupt_summarizes_completed_target(monkeypatch, capsys):
 
     assert setup_wizard.run_setup_wizard() == 130
     output = capsys.readouterr().out
-    assert "MCP Setup Results" in output
+    assert "Connection Results" in output
     assert "cursor" in output
 
 

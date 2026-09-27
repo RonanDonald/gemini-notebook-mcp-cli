@@ -247,7 +247,7 @@ def run_add(selected: list[str]) -> list[SetupResult]:
                     client, "partial", dest, tuple(recorded), "Interrupted; inspect this target"
                 )
             )
-            _display_results_summary("MCP Setup Results (partial)", results)
+            _display_results_summary("Connection Results (partial)", results)
             raise
         except (OSError, ConfigParseError, ValueError) as exc:
             status, message = "failed", str(exc)
@@ -300,6 +300,55 @@ def _display_results_summary(title: str, results: list[SetupResult]) -> None:
         console.print(f"\n[dim]{REASSURANCE_LINE}[/dim]")
 
 
+def build_status_rows(targets: list[SetupTarget], state_fn) -> list[dict]:
+    """Assemble per-tool status: connection state + skill state/version/upgrade."""
+    rows: list[dict] = []
+    for t in targets:
+        conn = "✓ set up" if t.configured else "✗ not yet"
+        st = state_fn(t)
+        if not st["supported"]:
+            skill_cell = "– n/a"
+        elif not st["installed"]:
+            skill_cell = "✗ not yet"
+        elif st["upgrade_available"]:
+            old = f"v{st['version']}" if st["version"] else "unversioned"
+            skill_cell = f"⬆ {old} → v{st['package_version']}"
+        else:
+            skill_cell = f"✓ v{st['version']}"
+        rows.append({"tool": t.label, "connection": conn, "skill": skill_cell})
+    return rows
+
+
+def _skill_state_for(target: SetupTarget) -> dict:
+    """Skill version state for a target, keyed by its skill tool id."""
+    tool = target.skill_id or target.id
+    return skill.skill_version_state(tool, "user")
+
+
+def _flow_status() -> int:
+    """Show a table of detected tools with connection + skill state."""
+    detected = [t for t in scan_mcp_targets() if t.installed]
+    if not detected:
+        console.print("[yellow]No supported AI tools detected on your system.[/yellow]")
+        return 0
+    rows = build_status_rows(detected, _skill_state_for)
+    table = Table(title="Your AI Tools", padding=(0, 2))
+    table.add_column("Tool", style="bold")
+    table.add_column("Connection (MCP)", justify="center")
+    table.add_column("Skill", justify="center")
+    for r in rows:
+        table.add_row(r["tool"], r["connection"], r["skill"])
+    console.print()
+    console.print(table)
+    console.print("[dim]Only tools found on your machine are shown.[/dim]")
+    return 0
+
+
+def _flow_skill_add() -> int:
+    """Standalone 'Add the skill' door (scope + skill picker, no MCP step)."""
+    return 0 if _flow_skill_offer([]) else 130
+
+
 def run_setup_wizard() -> int:
     """Run the guided setup wizard. Returns process exit code."""
     if not is_interactive():
@@ -318,9 +367,11 @@ def run_setup_wizard() -> int:
         choice = questionary.select(
             "What would you like to do?",
             choices=[
-                "Add — configure Gemini Notebook MCP for installed tools",
-                "Remove — remove MCP entries or skills",
-                "Get JSON for another tool — generate snippet for custom tools",
+                "Show my tools' status",
+                "Add the MCP to my tools",
+                "Add the skill to my tools",
+                "Remove an MCP or skill",
+                "Copy MCP setup for a tool not listed",
                 "Exit",
             ],
         ).ask()
@@ -328,11 +379,15 @@ def run_setup_wizard() -> int:
         if choice is None or choice == "Exit":
             return 130 if choice is None else 0
 
-        if choice.startswith("Add"):
+        if choice.startswith("Show"):
+            return _flow_status()
+        elif choice.startswith("Add the MCP"):
             return _flow_add()
+        elif choice.startswith("Add the skill"):
+            return _flow_skill_add()
         elif choice.startswith("Remove"):
             return _flow_remove()
-        elif choice.startswith("Get JSON"):
+        elif choice.startswith("Copy"):
             return _flow_json()
 
     except KeyboardInterrupt:
@@ -390,7 +445,7 @@ def _flow_add() -> int:
     _display_results_summary("Connection Results", results)
 
     # Offer optional skill
-    return 0 if _flow_skill_offer(selected) else 130
+    return 0 if _flow_skill_offer(selected, post_connect=True) else 130
 
 
 def build_skill_rows(tool_options, level: str, selected_mcp_ids: list[str]) -> list[PickerRow]:
@@ -422,14 +477,17 @@ def build_skill_rows(tool_options, level: str, selected_mcp_ids: list[str]) -> l
     return rows
 
 
-def _flow_skill_offer(selected_mcp_ids: list[str]) -> bool:
-    """Offer optional skill installation after MCP setup."""
-    console.print("\n[bold]Optional: Install NotebookLM Skill[/bold]")
-    console.print("Provides prompt instructions, reference docs, and workflows to AI agents.\n")
+def _flow_skill_offer(selected_mcp_ids: list[str], post_connect: bool = False) -> bool:
+    """Offer skill installation. Used standalone and as a post-connect follow-up."""
+    console.print("\n[bold]Gemini Notebook skill[/bold]")
+    console.print("Teaches your AI tools how to use Gemini Notebook well.\n")
 
-    want_skill = questionary.confirm(
-        "Would you like to install the NotebookLM skill?", default=True
-    ).ask()
+    prompt = (
+        "Connection added. Also add the skill? (recommended)"
+        if post_connect
+        else "Add the skill? (recommended)"
+    )
+    want_skill = questionary.confirm(prompt, default=True).ask()
     if want_skill is None:
         return False
     if not want_skill:
