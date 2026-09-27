@@ -370,6 +370,47 @@ def _inject_frontmatter_extras(skill_path: Path, extras: dict[str, str]) -> None
     skill_path.write_text(content, encoding="utf-8")
 
 
+def skill_version_state(tool: str, level: str = "user") -> dict:
+    """Return install + version + upgrade info for a tool's skill.
+
+    Keys: supported, installed, version, package_version, upgrade_available.
+    An installed skill with no readable version marker is treated as upgradeable.
+    """
+    dest = get_skill_destination(tool, level)
+    package_version = __version__
+    if dest is None:
+        return {
+            "supported": False,
+            "installed": False,
+            "version": None,
+            "package_version": package_version,
+            "upgrade_available": False,
+        }
+    installed, _ = check_install_status(tool, level)
+    if not installed:
+        return {
+            "supported": True,
+            "installed": False,
+            "version": None,
+            "package_version": package_version,
+            "upgrade_available": False,
+        }
+    version = _get_installed_version(tool, level)
+    upgrade = True
+    if version is not None:
+        try:
+            upgrade = Version(version) < Version(package_version)
+        except InvalidVersion:
+            upgrade = True
+    return {
+        "supported": True,
+        "installed": True,
+        "version": version,
+        "package_version": package_version,
+        "upgrade_available": upgrade,
+    }
+
+
 def _get_installed_version(tool: str, level: str) -> str | None:
     """Read the version from an installed skill. Returns None if not found."""
     config = TOOL_CONFIGS[tool]
