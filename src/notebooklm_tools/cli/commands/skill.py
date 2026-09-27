@@ -3,9 +3,10 @@
 import os
 import re
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, TypedDict
+from typing import Any, TypedDict
 
 import typer
 from packaging.version import InvalidVersion, Version
@@ -196,14 +197,16 @@ def skill_action(
 ) -> SkillActionResult:
     """Perform a safe skill action (install, update, remove) with backups and version checks."""
     if level not in ("user", "project"):
-        return SkillActionResult("failed", None, None, f"Invalid level '{level}'. Must be 'user' or 'project'.")
+        return SkillActionResult(
+            "failed", None, None, f"Invalid level '{level}'. Must be 'user' or 'project'."
+        )
 
     if tool == "claude-desktop":
         return SkillActionResult(
             "failed",
             None,
             None,
-            "Claude Desktop uses account-based skills; local skills are not supported (MCP-only)."
+            "Claude Desktop uses account-based skills; local skills are not supported (MCP-only).",
         )
 
     if tool not in TOOL_CONFIGS:
@@ -212,13 +215,20 @@ def skill_action(
     config = TOOL_CONFIGS[tool]
     install_path = get_skill_destination(tool, level)
     if not install_path:
-        return SkillActionResult("failed", None, None, f"Tool '{tool}' does not support {level}-level installation.")
+        return SkillActionResult(
+            "failed", None, None, f"Tool '{tool}' does not support {level}-level installation."
+        )
 
     installed, _ = check_install_status(tool, level)
 
     if action == "remove":
         if not installed:
-            return SkillActionResult("skipped", install_path, None, f"Skill is not installed for {tool} at {level} level.")
+            return SkillActionResult(
+                "skipped",
+                install_path,
+                None,
+                f"Skill is not installed for {tool} at {level} level.",
+            )
         if confirm_replace and not confirm_replace(f"Remove skill from {install_path}?"):
             return SkillActionResult("skipped", install_path, None, "Removal declined.")
 
@@ -242,12 +252,21 @@ def skill_action(
 
     if installed:
         if comparison == package_ver:
-            return SkillActionResult("current", install_path, None, f"Skill is already at v{__version__}")
+            return SkillActionResult(
+                "current", install_path, None, f"Skill is already at v{__version__}"
+            )
         if comparison is not None and comparison > package_ver:
-            return SkillActionResult("newer", install_path, None, f"Installed skill (v{current_version}) is newer than package v{__version__}; preserved.")
+            return SkillActionResult(
+                "newer",
+                install_path,
+                None,
+                f"Installed skill (v{current_version}) is newer than package v{__version__}; preserved.",
+            )
         if confirm_replace:
             ver_label = f"v{current_version}" if current_version else "unversioned"
-            if not confirm_replace(f"Replace {ver_label} skill at {install_path} with v{__version__}?"):
+            if not confirm_replace(
+                f"Replace {ver_label} skill at {install_path} with v{__version__}?"
+            ):
                 return SkillActionResult("skipped", install_path, None, "Replacement declined.")
 
         try:
@@ -267,7 +286,9 @@ def skill_action(
             install_all_formats(install_path)
 
         status = "updated" if (installed and current_version != __version__) else "installed"
-        return SkillActionResult(status, install_path, backup, f"Successfully {status} skill at {install_path}")
+        return SkillActionResult(
+            status, install_path, backup, f"Successfully {status} skill at {install_path}"
+        )
     except Exception as exc:
         return SkillActionResult("failed", install_path, backup, f"Installation failed: {exc}")
 

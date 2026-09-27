@@ -1,11 +1,11 @@
-from types import SimpleNamespace
-from notebooklm_tools.cli.commands import setup
 """Tests for GitHub Copilot support in ``nlm setup add/remove/list``."""
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
+from notebooklm_tools.cli.commands import setup
 from notebooklm_tools.cli.commands.setup import (
     CLIENT_REGISTRY,
     MCP_SERVER_CMD,
@@ -247,13 +247,25 @@ class TestGitHubCopilotUserScope:
     def test_setup_user_scope_via_code_cli(self, tmp_path, monkeypatch):
         calls = []
         user_config = tmp_path / "User" / "mcp.json"
-        monkeypatch.setattr(setup, "_github_copilot_config_path", lambda scope="project": user_config if scope == "user" else tmp_path / ".vscode" / "mcp.json")
-        monkeypatch.setattr(setup.shutil, "which", lambda cmd: "/usr/bin/code" if cmd == "code" else "/bin/notebooklm-mcp")
+        monkeypatch.setattr(
+            setup,
+            "_github_copilot_config_path",
+            lambda scope="project": (
+                user_config if scope == "user" else tmp_path / ".vscode" / "mcp.json"
+            ),
+        )
+        monkeypatch.setattr(
+            setup.shutil,
+            "which",
+            lambda cmd: "/usr/bin/code" if cmd == "code" else "/bin/notebooklm-mcp",
+        )
         monkeypatch.setattr(setup, "_find_mcp_server_path", lambda: "/bin/notebooklm-mcp")
         monkeypatch.setattr(
             setup.subprocess,
             "run",
-            lambda args, **kw: calls.append(args) or SimpleNamespace(returncode=0, stdout="", stderr=""),
+            lambda args, **kw: (
+                calls.append(args) or SimpleNamespace(returncode=0, stdout="", stderr="")
+            ),
         )
         assert setup._setup_github_copilot(scope="user") is True
         assert len(calls) == 1
@@ -265,20 +277,34 @@ class TestGitHubCopilotUserScope:
 
     def test_unknown_copilot_profile_does_not_write_project_file(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(setup, "_github_copilot_config_path", lambda scope="project": None if scope == "user" else tmp_path / ".vscode" / "mcp.json")
+        monkeypatch.setattr(
+            setup,
+            "_github_copilot_config_path",
+            lambda scope="project": None if scope == "user" else tmp_path / ".vscode" / "mcp.json",
+        )
         assert setup._setup_github_copilot(scope="user") is False
         assert not (tmp_path / ".vscode" / "mcp.json").exists()
 
     def test_remove_github_copilot_user_scope(self, tmp_path, monkeypatch):
         user_config = tmp_path / "User" / "mcp.json"
         user_config.parent.mkdir(parents=True)
-        user_config.write_text(json.dumps({
-            "servers": {
-                setup.MCP_SERVER_NAME: {"command": setup.MCP_SERVER_CMD},
-                "other": {"command": "other"}
-            }
-        }))
-        monkeypatch.setattr(setup, "_github_copilot_config_path", lambda scope="project": user_config if scope == "user" else tmp_path / ".vscode" / "mcp.json")
+        user_config.write_text(
+            json.dumps(
+                {
+                    "servers": {
+                        setup.MCP_SERVER_NAME: {"command": setup.MCP_SERVER_CMD},
+                        "other": {"command": "other"},
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr(
+            setup,
+            "_github_copilot_config_path",
+            lambda scope="project": (
+                user_config if scope == "user" else tmp_path / ".vscode" / "mcp.json"
+            ),
+        )
         assert setup._remove_single("github-copilot", scope="user") is True
         data = json.loads(user_config.read_text())
         assert setup.MCP_SERVER_NAME not in data["servers"]
@@ -287,15 +313,21 @@ class TestGitHubCopilotUserScope:
     def test_remove_github_copilot_jsonc_refusal(self, tmp_path, monkeypatch):
         user_config = tmp_path / "User" / "mcp.json"
         user_config.parent.mkdir(parents=True)
-        jsonc = '''{
+        jsonc = """{
             // Comment that would be destroyed by json.loads
             "servers": {
                 "gemini-notebook-mcp": {
                     "command": "notebooklm-mcp",
                 }
             }
-        }'''
+        }"""
         user_config.write_text(jsonc, encoding="utf-8")
-        monkeypatch.setattr(setup, "_github_copilot_config_path", lambda scope="project": user_config if scope == "user" else tmp_path / ".vscode" / "mcp.json")
+        monkeypatch.setattr(
+            setup,
+            "_github_copilot_config_path",
+            lambda scope="project": (
+                user_config if scope == "user" else tmp_path / ".vscode" / "mcp.json"
+            ),
+        )
         assert setup._remove_single("github-copilot", scope="user") is False
         assert user_config.read_text(encoding="utf-8") == jsonc

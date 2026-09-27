@@ -6,11 +6,11 @@ import shutil
 import stat
 import tempfile
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterator
 
 
 class ConfigParseError(ValueError):
@@ -79,7 +79,7 @@ def backup_existing(path: Path, *, label: str) -> Path | None:
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
     root.chmod(0o700)
 
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup_path = root / f"{stamp}-{uuid.uuid4().hex[:8]}-{label}"
 
     try:

@@ -108,7 +108,7 @@ def test_backup_existing_rejects_symlink(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: fake_home)
 
     real_file = tmp_path / "real.json"
-    real_file.write_text('{}')
+    real_file.write_text("{}")
     link_file = tmp_path / "link.json"
     link_file.symlink_to(real_file)
 
@@ -128,7 +128,7 @@ def test_backup_existing_rejects_symlink_backup_root(tmp_path, monkeypatch):
     link_root.symlink_to(real_backups)
 
     config_file = tmp_path / "conf.json"
-    config_file.write_text('{}')
+    config_file.write_text("{}")
 
     with pytest.raises(ValueError, match="symbolic-link backup root"):
         backup_existing(config_file, label="test")
