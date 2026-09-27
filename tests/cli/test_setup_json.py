@@ -27,3 +27,33 @@ def test_snippet_uvx_and_unwrapped():
     assert snip[setup.MCP_SERVER_NAME]["command"] == "uvx"
     assert snip[setup.MCP_SERVER_NAME]["args"] == ["--from", "notebooklm-mcp-cli", "notebooklm-mcp"]
     assert "mcpServers" not in snip
+
+
+def test_json_screen_notes_when_path_undetected(monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    from notebooklm_tools.cli.commands import setup_wizard
+
+    monkeypatch.setattr(setup.shutil, "which", lambda _: None)
+    monkeypatch.setattr(setup_wizard, "copy_to_clipboard", lambda v: True)
+    monkeypatch.setattr(
+        setup.questionary, "select", lambda *a, **k: SimpleNamespace(ask=lambda: "No, I'm done")
+    )
+    setup._setup_json()
+    out = capsys.readouterr().out.lower()
+    assert "on your path" in out
+
+
+def test_json_screen_no_note_when_path_detected(monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    from notebooklm_tools.cli.commands import setup_wizard
+
+    monkeypatch.setattr(setup.shutil, "which", lambda _: "/opt/bin/notebooklm-mcp")
+    monkeypatch.setattr(setup_wizard, "copy_to_clipboard", lambda v: True)
+    monkeypatch.setattr(
+        setup.questionary, "select", lambda *a, **k: SimpleNamespace(ask=lambda: "No, I'm done")
+    )
+    setup._setup_json()
+    out = capsys.readouterr().out.lower()
+    assert "on your path" not in out

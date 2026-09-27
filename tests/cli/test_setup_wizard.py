@@ -683,3 +683,11 @@ def test_build_remove_rows_groups_and_opts_in(monkeypatch, tmp_path):
     assert by_value["cursor"].note.startswith("~")
     assert by_value["skill:agents:user"].group == "Skills"
     assert by_value["skill:agents:user"].checked is False
+
+
+def test_gemini_target_skill_id_resolves_to_shared_skill():
+    targets = {t.id: t for t in setup_wizard.scan_mcp_targets()}
+    gemini = targets["gemini"]
+    # Gemini CLI shares the "agents" skill file; its skill_id must resolve, not be n/a.
+    assert gemini.skill_id is not None
+    assert skill.get_skill_destination(gemini.skill_id, "user") is not None

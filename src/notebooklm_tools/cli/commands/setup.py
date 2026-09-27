@@ -1489,11 +1489,21 @@ def _render_and_copy_snippet(snippet: dict) -> None:
         console.print("[dim]Copy it manually — no clipboard utility available.[/dim]")
 
 
+def _note_if_path_undetected() -> None:
+    """Warn when the full binary path can't be detected and the snippet is bare."""
+    if _find_mcp_server_path() is None:
+        console.print(
+            "[dim]Note: couldn't find notebooklm-mcp on your PATH, so this uses the bare "
+            "command. If your tool can't start it, replace it with the full path.[/dim]"
+        )
+
+
 def _setup_json() -> None:
     """Show the standard MCP snippet; offer advanced formats on request."""
     console.print("[bold]Copy MCP setup for a tool not listed[/bold]\n")
     console.print("Paste this into your tool's MCP settings:")
     _render_and_copy_snippet(build_json_snippet())
+    _note_if_path_undetected()
 
     choice = questionary.select(
         "Need a different format?",
@@ -1535,6 +1545,8 @@ def _setup_json() -> None:
     wrap = scope_choice.startswith("Full")
 
     _render_and_copy_snippet(build_json_snippet(config_type, use_full_path, wrap))
+    if config_type == "regular" and use_full_path:
+        _note_if_path_undetected()
 
 
 # =============================================================================

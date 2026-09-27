@@ -176,6 +176,9 @@ def scan_mcp_targets() -> list[SetupTarget]:
             dest = setup._opencode_config_path()
 
         skill_id = client_id if client_id in skill.TOOL_CONFIGS else None
+        if client_id == "gemini":
+            # Gemini CLI shares the "agents" skill file (TOOL_CONFIGS key "gemini-cli").
+            skill_id = "gemini-cli"
         if client_id == "claude-desktop":
             # Claude desktop is MCP-only unless claude-code is installed
             skill_id = None
