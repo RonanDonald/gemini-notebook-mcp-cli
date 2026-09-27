@@ -348,6 +348,25 @@ def run_setup_wizard() -> int:
     return 0
 
 
+def build_connect_rows(detected: list[SetupTarget]) -> list[PickerRow]:
+    """Group detected tools for the connect picker; no paths, plain repair note."""
+    needs_fix: list[PickerRow] = []
+    not_yet: list[PickerRow] = []
+    already: list[PickerRow] = []
+    for t in detected:
+        if t.repair_reason:
+            needs_fix.append(
+                PickerRow("Needs a fix", t.label, t.id, checked=True, note="⚠ quick fix needed")
+            )
+        elif not t.configured:
+            not_yet.append(PickerRow("Not connected yet", t.label, t.id, checked=True))
+        else:
+            already.append(
+                PickerRow("Already connected", t.label, t.id, disabled="already connected")
+            )
+    return needs_fix + not_yet + already
+
+
 def _flow_add() -> int:
     """Interactive Add MCP flow."""
     console.print("\n[bold]Scanning for installed AI tools...[/bold]\n")
@@ -359,24 +378,10 @@ def _flow_add() -> int:
         console.print("You can still install the skill for a detected skill-capable tool.")
         return 0 if _flow_skill_offer([]) else 130
 
-    # Build questionary checkbox choices
-    choices = [questionary.Choice(title="Select all detected", value="__all__")]
-    for t in detected:
-        status_tag = " (already configured)" if t.configured else " (detected)"
-        if t.repair_reason:
-            status_tag = f" (needs repair: {t.repair_reason})"
-        dest_tag = f" — {t.destination}" if t.destination else ""
-        choices.append(
-            questionary.Choice(
-                title=f"{t.label}{status_tag}{dest_tag}",
-                value=t.id,
-                checked=not t.configured or bool(t.repair_reason),
-            )
-        )
-
+    console.print(f"[dim]{LEGEND_SELECT}[/dim]")
     selected = questionary.checkbox(
-        "Select tools to configure for Gemini Notebook MCP:",
-        choices=choices,
+        "Select which tools to connect:",
+        choices=rows_to_choices(build_connect_rows(detected)),
     ).ask()
 
     if selected is None:
@@ -387,11 +392,8 @@ def _flow_add() -> int:
         console.print("[dim]No tools selected.[/dim]")
         return 0 if _flow_skill_offer([]) else 130
 
-    if "__all__" in selected:
-        selected = [target.id for target in detected]
-
     results = run_add(selected)
-    _display_results_summary("MCP Setup Results", results)
+    _display_results_summary("Connection Results", results)
 
     # Offer optional skill
     return 0 if _flow_skill_offer(selected) else 130

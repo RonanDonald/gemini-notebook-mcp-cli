@@ -106,7 +106,7 @@ def test_add_one_mcp_routes_copilot_to_user_scope(monkeypatch):
     assert called == ["user"]
 
 
-def test_flow_add_select_all_detected_passes_every_target(monkeypatch):
+def test_flow_add_passes_selected_targets_and_has_no_select_all_pseudo(monkeypatch):
     targets = [
         setup_wizard.SetupTarget(
             "cursor", "Cursor", True, False, Path("/tmp/cursor.json"), "cursor"
@@ -118,7 +118,7 @@ def test_flow_add_select_all_detected_passes_every_target(monkeypatch):
 
     def fake_checkbox(prompt, *, choices):
         captured_choices.extend(choices)
-        return SimpleNamespace(ask=lambda: ["__all__"])
+        return SimpleNamespace(ask=lambda: ["cursor", "codex"])
 
     monkeypatch.setattr(setup_wizard.questionary, "checkbox", fake_checkbox)
     selected = []
@@ -126,7 +126,8 @@ def test_flow_add_select_all_detected_passes_every_target(monkeypatch):
     monkeypatch.setattr(setup_wizard, "_flow_skill_offer", lambda selected: True)
 
     assert setup_wizard._flow_add() == 0
-    assert any(choice.value == "__all__" for choice in captured_choices)
+    # No "select all" pseudo-choice anymore (questionary's <a> key handles it)
+    assert not any(getattr(choice, "value", None) == "__all__" for choice in captured_choices)
     assert selected == ["cursor", "codex"]
 
 
@@ -576,3 +577,25 @@ def test_flow_remove_selects_only_exact_target_id(monkeypatch, tmp_path):
 
     assert setup_wizard._flow_remove() == 0
     assert selected == ["skill:extra:user"]
+
+def test_build_connect_rows_groups_and_hides_paths():
+    targets = [
+        setup_wizard.SetupTarget(
+            "codex", "Codex / ChatGPT", True, True, Path("/x"), "agents",
+            repair_reason="tool_timeout_sec (None) is below 300",
+        ),
+        setup_wizard.SetupTarget("windsurf", "Windsurf", True, False, Path("/y"), None),
+        setup_wizard.SetupTarget("cursor", "Cursor", True, True, Path("/z"), "cursor"),
+    ]
+    rows = setup_wizard.build_connect_rows(targets)
+    by_value = {r.value: r for r in rows}
+    assert by_value["codex"].group == "Needs a fix"
+    assert by_value["codex"].checked is True
+    assert "quick fix" in by_value["codex"].note
+    assert "/x" not in by_value["codex"].label
+    assert "300" not in by_value["codex"].label
+    assert by_value["windsurf"].group == "Not connected yet"
+    assert by_value["windsurf"].checked is True
+    assert by_value["cursor"].group == "Already connected"
+    assert by_value["cursor"].disabled == "already connected"
+    assert by_value["cursor"].checked is False
