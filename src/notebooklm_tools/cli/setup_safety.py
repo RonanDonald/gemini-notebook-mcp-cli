@@ -72,7 +72,10 @@ def backup_existing(path: Path, *, label: str) -> Path | None:
     if not path.exists():
         return None
 
-    root = Path.home() / ".notebooklm-mcp-cli" / "backups"
+    # Same storage root as the rest of the app (honors NOTEBOOKLM_MCP_CLI_PATH).
+    from notebooklm_tools.utils.config import get_storage_dir
+
+    root = get_storage_dir() / "backups"
     if root.is_symlink():
         raise ValueError(f"Refusing symbolic-link backup root: {root}")
 

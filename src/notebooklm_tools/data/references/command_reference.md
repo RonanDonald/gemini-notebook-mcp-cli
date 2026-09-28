@@ -1128,6 +1128,7 @@ nlm skill install <tool> [--level user|project]
 nlm skill update [tool]
 nlm skill uninstall <tool>
 nlm skill show
+nlm skill package [--output DIR]   # Zip for Claude Desktop / claude.ai skill upload
 
 nlm doctor
 nlm doctor --verbose
@@ -1138,14 +1139,18 @@ Relay AI/3P profiles exist, the command prompts for a selection unless
 `--profile` is supplied; if no profile exists, nothing is created. Fully quit
 the selected Claude profile before adding or removing MCP configuration. The
 CLI refuses to write while the active Claude executable is running, including
-when Relay AI launched it. Bare `nlm setup` opens a wizard with Add, Remove,
-Get JSON, and Exit options. MCP configuration defaults to app/user scope;
+when Relay AI launched it. Bare `nlm setup` opens a wizard with Show my tools' status,
+Add the MCP to my tools/agents, Add the skill to my tools/agents, Remove an MCP
+or skill, Copy MCP setup for a tool not listed, and Exit (Esc goes back). It
+offers to rename entries still using the old `notebooklm-mcp` name. MCP configuration defaults to app/user scope;
 GitHub Copilot is configured in the VS Code user profile by the wizard. Its
 direct command defaults to the current project and accepts `--scope user` for
 the global profile. The optional skill defaults to **All projects (user level)**
 and can target **This folder (project level)**. Skill updates skip equal or
 newer versions and ask before replacing older or unversioned installs; existing
-skill directories are backed up before replacement or removal.
+skill directories are backed up before replacement or removal. `nlm skill
+package` writes `nlm-skill.zip` for Claude Desktop Chat/Cowork and claude.ai
+(Customize → Skills → Add); re-upload it after updating `nlm`.
 
 Verb-first aliases are also available for common operations, including
 `nlm create`, `nlm list`, `nlm get`, `nlm add`, `nlm rename`, `nlm delete`,

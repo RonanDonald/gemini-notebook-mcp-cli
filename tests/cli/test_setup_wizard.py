@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.output import DummyOutput
 from typer.testing import CliRunner
 
 from notebooklm_tools.cli import main
@@ -107,7 +109,7 @@ def test_flow_add_passes_selected_targets_and_has_no_select_all_pseudo(monkeypat
     monkeypatch.setattr(setup_wizard, "scan_mcp_targets", lambda: targets)
     captured_choices = []
 
-    def fake_checkbox(prompt, *, choices):
+    def fake_checkbox(prompt, *, choices, **kwargs):
         captured_choices.extend(choices)
         return SimpleNamespace(ask=lambda: ["cursor", "codex"])
 
@@ -144,6 +146,51 @@ def test_flow_add_returns_cancel_status_from_skill_prompt(monkeypatch):
     )
 
     assert setup_wizard._flow_add() == 130
+
+
+def test_flow_add_failed_connection_flags_skill_offer_not_ok(monkeypatch):
+    """A failed connection must tell the skill offer it did NOT succeed."""
+    target = setup_wizard.SetupTarget(
+        "claude-desktop", "Claude Desktop", True, False, Path("/x"), None
+    )
+    monkeypatch.setattr(setup_wizard, "scan_mcp_targets", lambda: [target])
+    monkeypatch.setattr(
+        setup_wizard.questionary,
+        "checkbox",
+        lambda *a, **kw: SimpleNamespace(ask=lambda: ["claude-desktop"]),
+    )
+    monkeypatch.setattr(
+        setup_wizard,
+        "run_add",
+        lambda ids: [
+            setup_wizard.SetupResult("claude-desktop", "failed", Path("/x"), (), "Setup failed")
+        ],
+    )
+    captured = {}
+    monkeypatch.setattr(
+        setup_wizard,
+        "_flow_skill_offer",
+        lambda selected, **kwargs: captured.update(kwargs) or True,
+    )
+
+    setup_wizard._flow_add()
+    assert captured.get("connected_ok") is False
+
+
+def test_skill_offer_failed_connection_prompt_is_honest(monkeypatch):
+    """When the connection failed, the prompt must not claim 'Connection added'."""
+    prompts = []
+    monkeypatch.setattr(
+        setup_wizard.questionary,
+        "confirm",
+        lambda prompt, **kw: prompts.append(prompt) or SimpleNamespace(ask=lambda: False),
+    )
+
+    setup_wizard._flow_skill_offer(["claude-desktop"], post_connect=True, connected_ok=False)
+
+    assert prompts
+    assert "Connection added" not in prompts[0]
+    assert "didn't complete" in prompts[0]
 
 
 def test_skill_offer_dedups_shared_destination(monkeypatch, tmp_path):
@@ -244,7 +291,7 @@ def test_add_interrupt_summarizes_completed_target(monkeypatch, capsys):
     monkeypatch.setattr(
         setup_wizard.questionary,
         "select",
-        lambda *args, **kwargs: SimpleNamespace(ask=lambda: "Add the MCP to my tools"),
+        lambda *args, **kwargs: SimpleNamespace(ask=lambda: "Add the MCP to my tools/agents"),
     )
     monkeypatch.setattr(
         setup_wizard.questionary,
@@ -324,6 +371,54 @@ def test_questionary_none_cancellation_exits_130(monkeypatch):
 
     exit_code = setup_wizard.run_setup_wizard()
     assert exit_code == 130
+
+
+def test_menu_loops_back_after_a_door_and_exits_on_exit(monkeypatch):
+    """A finished door returns to the menu; only 'Exit' quits the wizard."""
+    monkeypatch.setattr(setup_wizard, "is_interactive", lambda: True)
+    # First pick a door, then choose Exit on the second menu render.
+    answers = iter(["Show my tools' status", "Exit"])
+    monkeypatch.setattr(
+        setup_wizard.questionary,
+        "select",
+        lambda *a, **kw: SimpleNamespace(ask=lambda: next(answers)),
+    )
+    calls = []
+    monkeypatch.setattr(setup_wizard, "_flow_status", lambda: calls.append("status") or 0)
+
+    exit_code = setup_wizard.run_setup_wizard()
+
+    assert exit_code == 0
+    assert calls == ["status"]  # door ran once, then the menu re-appeared
+
+
+@pytest.mark.parametrize(
+    "make_question",
+    [
+        lambda q, inp: q.checkbox("t", choices=["a", "b"], input=inp, output=DummyOutput()),
+        lambda q, inp: q.select("t", choices=["a", "b"], input=inp, output=DummyOutput()),
+        # confirm has read-only merged key bindings — regression for the Esc crash.
+        lambda q, inp: q.confirm("t", input=inp, output=DummyOutput()),
+    ],
+    ids=["checkbox", "select", "confirm"],
+)
+def test_ask_with_back_esc_returns_none_on_real_question(make_question):
+    import questionary
+
+    from notebooklm_tools.cli.commands.setup import ask_with_back
+
+    with create_pipe_input() as inp:
+        q = make_question(questionary, inp)
+        inp.send_text("\x1b")  # lone Esc -> go back
+        assert ask_with_back(q) is None
+
+
+def test_ask_with_back_is_mock_safe():
+    from notebooklm_tools.cli.commands.setup import ask_with_back
+
+    # Mocked questions have no .application; the helper must still just call ask().
+    q = SimpleNamespace(ask=lambda: "ok")
+    assert ask_with_back(q) == "ok"
 
 
 # --- Task 6: Removal Flow Tests ---
@@ -590,12 +685,13 @@ def test_build_connect_rows_groups_and_hides_paths():
     rows = setup_wizard.build_connect_rows(targets)
     by_value = {r.value: r for r in rows}
     assert by_value["codex"].group == "Needs a fix"
-    assert by_value["codex"].checked is True
+    # Connect picker is opt-in: nothing pre-ticked (user chooses explicitly).
+    assert by_value["codex"].checked is False
     assert "quick fix" in by_value["codex"].note
     assert "/x" not in by_value["codex"].label
     assert "300" not in by_value["codex"].label
     assert by_value["windsurf"].group == "Not connected yet"
-    assert by_value["windsurf"].checked is True
+    assert by_value["windsurf"].checked is False
     assert by_value["cursor"].group == "Already connected"
     assert by_value["cursor"].disabled == "already connected"
     assert by_value["cursor"].checked is False
@@ -691,3 +787,10 @@ def test_gemini_target_skill_id_resolves_to_shared_skill():
     # Gemini CLI shares the "agents" skill file; its skill_id must resolve, not be n/a.
     assert gemini.skill_id is not None
     assert skill.get_skill_destination(gemini.skill_id, "user") is not None
+
+
+def test_skill_rows_always_offer_upload_row_unticked():
+    rows = setup_wizard.with_upload_row([])
+    assert rows[-1].value == setup_wizard.UPLOAD_ROW_VALUE
+    assert rows[-1].checked is False
+    assert "Claude Desktop / claude.ai" in rows[-1].label

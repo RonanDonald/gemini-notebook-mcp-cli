@@ -1205,6 +1205,60 @@ How much of my Gemini Notebook usage allowance is left?
 
 ---
 
+## Test Group 14: Setup Wizard (CLI only)
+
+Automated: `uv run pytest -m wizard_e2e` drives the real `nlm setup` in a
+pseudo-terminal against a sandboxed HOME (fake `claude`/`codex`/`ps`/`pbcopy`/
+`open`) and checks the files written. Run it after any change to
+`cli/commands/setup.py`, `setup_wizard.py`, `skill.py` or `cli/skill_package.py`.
+The manual checks below cover what the sandbox can't: the real `claude` and
+`codex` CLIs, and the real Claude Desktop upload. Run `nlm setup` in a real
+terminal (not an agent's shell — it refuses non-interactive sessions).
+
+### Test 14.1 - Status and Esc
+**CLI:** `nlm setup` → **Show my tools' status**
+
+**Expected:**
+- Only installed tools are listed, with ✓ set up / ✗ not yet / ⚠ old name and
+  the skill version (⬆ when an upgrade exists).
+- Esc on every screen returns to the main menu within ~0.1s; Esc on the main
+  menu quits.
+
+### Test 14.2 - Connect and rename
+**CLI:** `nlm setup` → **Add the MCP to my tools/agents**
+
+**Expected:**
+- Nothing is pre-ticked; already-connected tools are shown but not selectable.
+- Tools whose entry is still `notebooklm-mcp` appear under **Needs a fix**;
+  ticking them reports `repaired · Renamed to gemini-notebook-mcp`.
+- Verify: `claude mcp list` shows `gemini-notebook-mcp ✔ Connected`;
+  `~/.codex/config.toml` has `[mcp_servers.gemini-notebook-mcp]` and kept any
+  extra keys (e.g. `enabled = true`); Claude Desktop configs (both profiles if
+  chosen) contain `gemini-notebook-mcp` with the full binary path.
+- With Claude Desktop open, connecting it is refused ("still running").
+
+### Test 14.3 - Skill and Claude Desktop upload file
+**CLI:** `nlm setup` → **Add the skill to my tools/agents** (or `nlm skill package`)
+
+**Expected:**
+- No "Add the skill?" question — it opens on "Where should the skill live?".
+- The picker includes **Claude Desktop / claude.ai · creates a file to upload**,
+  not pre-ticked. Ticking it saves `~/Downloads/nlm-skill.zip`, reveals it in
+  Finder, and shows the upload steps last.
+- Upload via Claude Desktop **Customize → Skills → Add**: accepted; the skill
+  appears on the Skills page and loads in Chat and Cowork.
+
+### Test 14.4 - Remove and copy setup
+**CLI:** `nlm setup` → **Remove an MCP or skill**, then **Copy MCP setup for a tool not listed**
+
+**Expected:**
+- Remove: grouped MCP connections / Skills, nothing pre-ticked, two separate
+  default-No confirmations; only ticked items change; backups appear in
+  `~/.notebooklm-mcp-cli/backups/`.
+- Copy: the clipboard holds `{"mcpServers": {"gemini-notebook-mcp": {"command": "<full path>/notebooklm-mcp"}}}`.
+
+---
+
 ## Summary: 31 Consolidated Tools
 
 | Category | Tools | Count |

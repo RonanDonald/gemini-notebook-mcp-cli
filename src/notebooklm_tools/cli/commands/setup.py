@@ -32,6 +32,54 @@ from notebooklm_tools.cli.setup_safety import (
 from notebooklm_tools.cli.utils import is_tool_on_system, make_console
 
 console = make_console()
+
+# Colored text instead of the default reverse-video highlight. prompt_toolkit's
+# built-in style paints class:selected (checked rows) with `reverse`, which
+# renders as a light block behind dark text. We override with explicit
+# foreground colors + noreverse so pointed/checked rows read as colored text.
+WIZARD_STYLE = questionary.Style(
+    [
+        ("qmark", "fg:#00afaf bold"),
+        ("question", "bold"),
+        ("answer", "fg:#00afaf bold"),
+        ("pointer", "fg:#00afaf bold"),
+        ("highlighted", "fg:#00afaf bold noreverse"),
+        ("selected", "fg:#5faf5f noreverse"),
+        ("separator", "fg:#808080"),
+        ("instruction", "fg:#808080"),
+        ("text", "noreverse"),
+        ("disabled", "fg:#6c6c6c italic"),
+    ]
+)
+
+
+def ask_with_back(question):
+    """Run a questionary prompt with Esc bound to cancel (returns None), so
+    callers can treat Esc as "go back". Esc is bound WITHOUT eager=True so
+    prompt_toolkit's escape-timeout still lets arrow-key escape sequences
+    through. Mocked questions (no .application) fall back to a plain .ask().
+
+    Some prompts (e.g. confirm) carry read-only merged key bindings, so the Esc
+    binding is merged in alongside them rather than added to them in place."""
+    from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
+
+    application = getattr(question, "application", None)
+    if getattr(application, "key_bindings", None) is not None:
+        back = KeyBindings()
+
+        @back.add("escape")
+        def _back(event):
+            event.app.exit(result=None)
+
+        application.key_bindings = merge_key_bindings([application.key_bindings, back])
+        # prompt_toolkit waits ~1.5s by default to tell a lone Esc from an
+        # arrow-key sequence; arrows arrive in a burst, so a short wait is enough.
+        application.ttimeoutlen = 0.05
+        application.timeoutlen = 0.05
+
+    return question.ask()
+
+
 app = typer.Typer(
     name="setup",
     help="Configure Gemini Notebook MCP server for AI tools",
@@ -162,6 +210,55 @@ def _migrate_legacy_mcp_entry(config: dict, container_key: str) -> bool:
             servers[MCP_SERVER_NAME] = servers.pop(name)
             return True
     return False
+
+
+def _legacy_only_names(servers: object) -> list[str]:
+    """Our entries that still use an old name, when none uses the current one."""
+    names = _configured_mcp_names(servers)
+    if MCP_SERVER_NAME in names:
+        return []
+    return [name for name in names if name in LEGACY_MCP_SERVER_NAMES]
+
+
+# Shown in the wizard when a tool's entry still uses an old name.
+OLD_NAME_REASON = "uses the old name"
+
+
+def _old_name_reason(client_id: str) -> str | None:
+    """Return OLD_NAME_REASON if the client's entry still uses a legacy name."""
+    containers: list[tuple[dict, str]] = []
+    try:
+        if client_id == "claude-code":
+            containers.append((_read_json_config(Path.home() / ".claude.json"), "mcpServers"))
+        elif client_id == "claude-desktop":
+            for path in _claude_desktop_profile_paths().values():
+                containers.append((_read_json_config(path), "mcpServers"))
+        elif client_id == "github-copilot":
+            path = _github_copilot_config_path(scope="user")
+            if path and path.exists():
+                containers.append((_read_json_config(path), "servers"))
+        elif client_id == "opencode":
+            containers.append((_read_json_config(_opencode_config_path()), "mcp"))
+        elif client_id == "codex":
+            path = _codex_config_path() / "config.toml"
+            if path.exists():
+                containers.append((tomllib.loads(path.read_text(encoding="utf-8")), "mcp_servers"))
+        else:
+            path_fn = {
+                "gemini": _gemini_config_path,
+                "cursor": _cursor_config_path,
+                "windsurf": _windsurf_config_path,
+                "cline": _cline_config_path,
+                "antigravity": _antigravity_config_path,
+            }.get(client_id)
+            if path_fn:
+                containers.append((_read_json_config(path_fn()), "mcpServers"))
+    except Exception:
+        return None
+    for config, key in containers:
+        if _legacy_only_names(config.get(key, {})):
+            return OLD_NAME_REASON
+    return None
 
 
 def _cli_output_contains_mcp(output: str) -> bool:
@@ -673,6 +770,10 @@ def _setup_claude_code() -> bool:
     """Add Gemini Notebook MCP to Claude Code via `claude mcp add`."""
     config_path = Path.home() / ".claude.json"
     config = _read_json_config(config_path)
+    servers = config.get("mcpServers", {})
+    legacy = _legacy_only_names(servers)
+    if legacy:
+        return _rename_claude_code_entry(config_path, legacy[0], servers[legacy[0]])
     if _is_configured(config):
         console.print("[green]✓[/green] Already configured in Claude Code")
         return True
@@ -721,10 +822,69 @@ def _setup_claude_code() -> bool:
         return False
 
 
+def _rename_claude_code_entry(config_path: Path, old_name: str, entry: object) -> bool:
+    """Rename a legacy Claude Code user entry, keeping its settings unchanged.
+
+    Adds the entry under the current name first, then removes the old one, so a
+    failed add leaves the working old entry in place.
+    """
+    claude_cmd = shutil.which("claude")
+    if not claude_cmd:
+        console.print(
+            f"[yellow]Warning:[/yellow] 'claude' command not found; can't rename "
+            f"'{old_name}' to '{MCP_SERVER_NAME}' in Claude Code."
+        )
+        return False
+    try:
+        backup_existing(config_path, label="claude-code-config")
+        added = subprocess.run(
+            [claude_cmd, "mcp", "add-json", "-s", "user", MCP_SERVER_NAME, json.dumps(entry)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if added.returncode != 0 and "already exists" not in added.stderr.lower():
+            console.print(
+                f"[yellow]Warning:[/yellow] claude mcp add-json returned: {added.stderr.strip()}"
+            )
+            return False
+        removed = subprocess.run(
+            [claude_cmd, "mcp", "remove", "-s", "user", old_name],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+        console.print(f"[yellow]Warning:[/yellow] Could not run claude command: {e}")
+        return False
+
+    # Trust the file, not the exit codes: confirm what actually changed.
+    servers = _read_json_config(config_path).get("mcpServers", {})
+    if MCP_SERVER_NAME not in servers:
+        console.print(
+            f"[yellow]Warning:[/yellow] Couldn't add '{MCP_SERVER_NAME}' to Claude Code; "
+            f"'{old_name}' was left as it was. {added.stderr.strip()}"
+        )
+        return False
+    if old_name in servers:
+        console.print(
+            f"[yellow]Warning:[/yellow] Added '{MCP_SERVER_NAME}' but couldn't remove the old "
+            f"'{old_name}' entry. Remove it with: claude mcp remove {old_name} -s user "
+            f"{removed.stderr.strip()}"
+        )
+        return True
+    console.print(f"[green]✓[/green] Renamed in Claude Code: {old_name} → {MCP_SERVER_NAME}")
+    return True
+
+
 def _select_claude_desktop_profile_paths(
     profile: str | None = None, *, configured_only: bool = False
-) -> dict[str, Path]:
-    """Select Claude Desktop profiles for MCP setup or removal."""
+) -> dict[str, Path] | None:
+    """Select Claude Desktop profiles for MCP setup or removal.
+
+    Returns None (falsy, like "nothing selected") when the user presses Esc at
+    the profile question, so callers can tell a deliberate skip from a failure.
+    """
     detected = _claude_desktop_profile_paths()
     if not detected:
         console.print(
@@ -782,12 +942,16 @@ def _select_claude_desktop_profile_paths(
         ),
         (CLAUDE_DESKTOP_PROFILE_BOTH, "Both detected profiles"),
     ]
-    selected = questionary.select(
-        "Multiple Claude Desktop profiles detected:",
-        choices=[questionary.Choice(title=label, value=value) for value, label in options],
-    ).ask()
+    selected = ask_with_back(
+        questionary.select(
+            "Multiple Claude Desktop profiles detected:",
+            choices=[questionary.Choice(title=label, value=value) for value, label in options],
+            instruction="(↑↓ move · Enter select · Esc to cancel)",
+            style=WIZARD_STYLE,
+        )
+    )
     if selected is None:
-        return {}
+        return None
     if selected == CLAUDE_DESKTOP_PROFILE_BOTH:
         return detected
     return {selected: detected[selected]}
@@ -891,11 +1055,16 @@ def _setup_github_copilot(scope: str = "project") -> bool:
             console.print("[red]notebooklm-mcp is not installed in PATH[/red]")
             return False
 
-        if config_path.exists() and _is_copilot_configured(scope="user"):
+        if (
+            config_path.exists()
+            and _is_copilot_configured(scope="user")
+            and _old_name_reason("github-copilot") is None
+        ):
             console.print("[green]✓[/green] Already configured in GitHub Copilot (user)")
             return True
 
-        code_cmd = shutil.which("code")
+        # A legacy entry is renamed in the JSON below; `code --add-mcp` would duplicate it.
+        code_cmd = shutil.which("code") if _old_name_reason("github-copilot") is None else None
         if code_cmd:
             if config_path.exists():
                 backup_existing(config_path, label="copilot-config")
@@ -1084,9 +1253,20 @@ def _edit_codex_entry(
         if "mcp_servers" not in doc:
             doc["mcp_servers"] = tomlkit.table()
         servers = doc["mcp_servers"]
+        renamed = None
         for legacy in LEGACY_MCP_SERVER_NAMES:
             if legacy in servers and _is_our_mcp_entry(legacy, servers[legacy]):
+                old_entry = servers[legacy]
                 del servers[legacy]
+                # Keep the first legacy entry's own settings (e.g. enabled, env).
+                if (
+                    MCP_SERVER_NAME not in servers
+                    and renamed is None
+                    and isinstance(old_entry, dict)
+                ):
+                    renamed = old_entry
+        if renamed is not None:
+            servers[MCP_SERVER_NAME] = renamed
 
         entry = servers.get(MCP_SERVER_NAME)
         if entry is None or not isinstance(entry, dict):
@@ -1120,6 +1300,8 @@ def _codex_repair_reason(path: Path | None = None) -> str | None:
             break
     if entry is None or not isinstance(entry, dict):
         return None
+    if _legacy_only_names(servers):
+        return OLD_NAME_REASON
 
     cmd = entry.get("command", "")
     binary_path = _find_mcp_server_path()
@@ -1505,41 +1687,53 @@ def _setup_json() -> None:
     _render_and_copy_snippet(build_json_snippet())
     _note_if_path_undetected()
 
-    choice = questionary.select(
-        "Need a different format?",
-        choices=["No, I'm done", "Advanced options"],
-    ).ask()
+    choice = ask_with_back(
+        questionary.select(
+            "Need a different format?",
+            choices=["No, I'm done", "Advanced options"],
+            style=WIZARD_STYLE,
+        )
+    )
     if choice is None or choice.startswith("No"):
         return
 
-    style = questionary.select(
-        "Command style:",
-        choices=["Installed binary (recommended)", "uvx (no install required)"],
-    ).ask()
+    style = ask_with_back(
+        questionary.select(
+            "Command style:",
+            choices=["Installed binary (recommended)", "uvx (no install required)"],
+            style=WIZARD_STYLE,
+        )
+    )
     if style is None:
         return
     config_type = "uvx" if "uvx" in style else "regular"
 
     use_full_path = True
     if config_type == "regular":
-        path_choice = questionary.select(
-            "Path style:",
-            choices=[
-                "Full path to the binary (most reliable)",
-                f"Just the command name ({MCP_SERVER_CMD})",
-            ],
-        ).ask()
+        path_choice = ask_with_back(
+            questionary.select(
+                "Path style:",
+                choices=[
+                    "Full path to the binary (most reliable)",
+                    f"Just the command name ({MCP_SERVER_CMD})",
+                ],
+                style=WIZARD_STYLE,
+            )
+        )
         if path_choice is None:
             return
         use_full_path = path_choice.startswith("Full")
 
-    scope_choice = questionary.select(
-        "Snippet shape:",
-        choices=[
-            "Full config file (with mcpServers wrapper)",
-            "Server entry only (add to an existing config)",
-        ],
-    ).ask()
+    scope_choice = ask_with_back(
+        questionary.select(
+            "Snippet shape:",
+            choices=[
+                "Full config file (with mcpServers wrapper)",
+                "Server entry only (add to an existing config)",
+            ],
+            style=WIZARD_STYLE,
+        )
+    )
     if scope_choice is None:
         return
     wrap = scope_choice.startswith("Full")

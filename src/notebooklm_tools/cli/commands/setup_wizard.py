@@ -9,15 +9,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import questionary
+from rich.panel import Panel
 from rich.table import Table
 
 from notebooklm_tools.cli.commands import setup, skill
+from notebooklm_tools.cli.commands.setup import WIZARD_STYLE, ask_with_back
 from notebooklm_tools.cli.setup_safety import ConfigParseError, capture_backups
 from notebooklm_tools.cli.utils import make_console
 
 console = make_console()
 
-LEGEND_SELECT = "● = will do it   ○ = skip   (pre-ticked = recommended)"
+LEGEND_SELECT = "● = will do it   ○ = skip"
+LEGEND_CONNECT = "● = will do it   ○ = skip   ·   nothing is pre-selected"
 LEGEND_REMOVE = "● = will remove   ○ = keep"
 REASSURANCE_LINE = "Originals backed up in case you want to revert."
 
@@ -76,6 +79,10 @@ class SetupResult:
     destination: Path | None
     backup_paths: tuple[Path, ...]
     message: str
+
+
+class _BackRequested(Exception):
+    """Esc pressed inside a nested prompt: abandon the current door, back to the menu."""
 
 
 def is_interactive() -> bool:
@@ -146,6 +153,7 @@ def scan_mcp_targets() -> list[SetupTarget]:
             configured=copilot_configured,
             destination=copilot_dest,
             skill_id=None,
+            repair_reason=setup._old_name_reason("github-copilot") if copilot_configured else None,
         )
     )
 
@@ -191,6 +199,7 @@ def scan_mcp_targets() -> list[SetupTarget]:
                 configured=configured,
                 destination=dest,
                 skill_id=skill_id,
+                repair_reason=setup._old_name_reason(client_id) if configured else None,
             )
         )
 
@@ -204,7 +213,14 @@ def add_one_mcp(client: str, *, repair: bool = False) -> bool:
     elif client == "codex":
         return setup._setup_codex(repair=repair)
     elif client == "claude-desktop":
-        return setup._setup_claude_desktop()
+        # Ask for the profile here so Esc can be reported as a skip, not a failure.
+        profiles = setup._select_claude_desktop_profile_paths()
+        if profiles is None:
+            raise _BackRequested
+        if not profiles:
+            return False
+        profile = next(iter(profiles)) if len(profiles) == 1 else setup.CLAUDE_DESKTOP_PROFILE_BOTH
+        return setup._setup_claude_desktop(profile=profile)
     elif client == "claude-code":
         return setup._setup_claude_code()
     elif client == "gemini":
@@ -239,11 +255,19 @@ def run_add(selected: list[str]) -> list[SetupResult]:
         recorded: list[Path] = []
         try:
             with capture_backups() as recorded:
-                configured = add_one_mcp(
-                    client, repair=bool(target and target.repair_reason is not None)
-                )
-                status = "configured" if configured else "failed"
-                message = "Configured" if configured else "Setup failed"
+                repairing = bool(target and target.repair_reason is not None)
+                configured = add_one_mcp(client, repair=repairing)
+                if not configured:
+                    status, message = "failed", "Setup failed"
+                elif repairing and target.repair_reason == setup.OLD_NAME_REASON:
+                    status, message = "repaired", f"Renamed to {setup.MCP_SERVER_NAME}"
+                elif repairing:
+                    status, message = "repaired", "Fixed"
+                else:
+                    status, message = "configured", "Configured"
+        except _BackRequested:
+            results.append(SetupResult(client, "skipped", dest, (), "Skipped (Esc)"))
+            continue
         except KeyboardInterrupt:
             results.append(
                 SetupResult(
@@ -289,6 +313,7 @@ def _display_results_summary(title: str, results: list[SetupResult]) -> None:
             "already": "[green]✓ already connected[/green]",
             "repaired": "[green]✓ repaired[/green]",
             "removed": "[green]✓ removed[/green]",
+            "created": "[green]✓ created[/green]",
             "skipped": "[yellow]skipped[/yellow]",
             "failed": "[red]✗ failed[/red]",
             "partial": "[yellow]⚠ partial[/yellow]",
@@ -307,7 +332,12 @@ def build_status_rows(targets: list[SetupTarget], state_fn) -> list[dict]:
     """Assemble per-tool status: connection state + skill state/version/upgrade."""
     rows: list[dict] = []
     for t in targets:
-        conn = "✓ set up" if t.configured else "✗ not yet"
+        if t.configured and t.repair_reason == setup.OLD_NAME_REASON:
+            conn = "⚠ old name"
+        elif t.configured and t.repair_reason:
+            conn = "⚠ needs a fix"
+        else:
+            conn = "✓ set up" if t.configured else "✗ not yet"
         st = state_fn(t)
         if not st["supported"]:
             skill_cell = "– n/a"
@@ -328,6 +358,20 @@ def _skill_state_for(target: SetupTarget) -> dict:
     return skill.skill_version_state(tool, "user")
 
 
+def _status_markup(cell: str) -> str:
+    """Color a status cell by its leading glyph (green=set, red=missing,
+    yellow=upgrade, dim=n/a)."""
+    if cell.startswith("✓"):
+        return f"[green]{cell}[/green]"
+    if cell.startswith("✗"):
+        return f"[red]{cell}[/red]"
+    if cell.startswith(("⬆", "⚠")):
+        return f"[yellow]{cell}[/yellow]"
+    if cell.startswith("–"):
+        return f"[dim]{cell}[/dim]"
+    return cell
+
+
 def _flow_status() -> int:
     """Show a table of detected tools with connection + skill state."""
     detected = [t for t in scan_mcp_targets() if t.installed]
@@ -335,21 +379,23 @@ def _flow_status() -> int:
         console.print("[yellow]No supported AI tools detected on your system.[/yellow]")
         return 0
     rows = build_status_rows(detected, _skill_state_for)
-    table = Table(title="Your AI Tools", padding=(0, 2))
-    table.add_column("Tool", style="bold")
-    table.add_column("Connection (MCP)", justify="center")
-    table.add_column("Skill", justify="center")
+    table = Table(title="Your AI Tools", title_style="italic cyan", padding=(0, 2))
+    table.add_column("Tool", style="bold", header_style="bold cyan")
+    table.add_column("Connection (MCP)", justify="center", header_style="bold cyan")
+    table.add_column("Skill", justify="center", header_style="bold cyan")
     for r in rows:
-        table.add_row(r["tool"], r["connection"], r["skill"])
+        table.add_row(r["tool"], _status_markup(r["connection"]), _status_markup(r["skill"]))
     console.print()
     console.print(table)
     console.print("[dim]Only tools found on your machine are shown.[/dim]")
+    if any(r["connection"].startswith("⚠") for r in rows):
+        console.print('[dim]⚠ = pick "Add the MCP to my tools/agents" to fix it.[/dim]')
     return 0
 
 
 def _flow_skill_add() -> int:
     """Standalone 'Add the skill' door (scope + skill picker, no MCP step)."""
-    return 0 if _flow_skill_offer([]) else 130
+    return 0 if _flow_skill_offer([], ask_first=False) else 130
 
 
 def run_setup_wizard() -> int:
@@ -367,37 +413,45 @@ def run_setup_wizard() -> int:
     console.print("Easily configure Gemini Notebook MCP server and skills for your AI tools.\n")
 
     try:
-        choice = questionary.select(
-            "What would you like to do?",
-            choices=[
-                "Show my tools' status",
-                "Add the MCP to my tools",
-                "Add the skill to my tools",
-                "Remove an MCP or skill",
-                "Copy MCP setup for a tool not listed",
-                "Exit",
-            ],
-        ).ask()
+        while True:
+            choice = ask_with_back(
+                questionary.select(
+                    "What would you like to do?",
+                    choices=[
+                        "Show my tools' status",
+                        "Add the MCP to my tools/agents",
+                        "Add the skill to my tools/agents",
+                        "Remove an MCP or skill",
+                        "Copy MCP setup for a tool not listed",
+                        "Exit",
+                    ],
+                    instruction="(↑↓ move · Enter select · Esc to quit)",
+                    style=WIZARD_STYLE,
+                )
+            )
 
-        if choice is None or choice == "Exit":
-            return 130 if choice is None else 0
+            if choice is None:
+                return 130
+            if choice == "Exit":
+                return 0
 
-        if choice.startswith("Show"):
-            return _flow_status()
-        elif choice.startswith("Add the MCP"):
-            return _flow_add()
-        elif choice.startswith("Add the skill"):
-            return _flow_skill_add()
-        elif choice.startswith("Remove"):
-            return _flow_remove()
-        elif choice.startswith("Copy"):
-            return _flow_json()
+            if choice.startswith("Show"):
+                _flow_status()
+            elif choice.startswith("Add the MCP"):
+                _flow_add()
+            elif choice.startswith("Add the skill"):
+                _flow_skill_add()
+            elif choice.startswith("Remove"):
+                _flow_remove()
+            elif choice.startswith("Copy"):
+                _flow_json()
 
+            # A door finished (or the user pressed Esc inside it): return to the
+            # main menu instead of quitting the wizard.
+            console.print()
     except KeyboardInterrupt:
         console.print("\n[yellow]Setup cancelled by user.[/yellow]")
         return 130
-
-    return 0
 
 
 def build_connect_rows(detected: list[SetupTarget]) -> list[PickerRow]:
@@ -407,11 +461,14 @@ def build_connect_rows(detected: list[SetupTarget]) -> list[PickerRow]:
     already: list[PickerRow] = []
     for t in detected:
         if t.repair_reason:
-            needs_fix.append(
-                PickerRow("Needs a fix", t.label, t.id, checked=True, note="⚠ quick fix needed")
+            note = (
+                "⚠ uses the old name"
+                if t.repair_reason == setup.OLD_NAME_REASON
+                else "⚠ quick fix needed"
             )
+            needs_fix.append(PickerRow("Needs a fix", t.label, t.id, note=note))
         elif not t.configured:
-            not_yet.append(PickerRow("Not connected yet", t.label, t.id, checked=True))
+            not_yet.append(PickerRow("Not connected yet", t.label, t.id))
         else:
             already.append(
                 PickerRow("Already connected", t.label, t.id, disabled="already connected")
@@ -430,11 +487,15 @@ def _flow_add() -> int:
         console.print("You can still install the skill for a detected skill-capable tool.")
         return 0 if _flow_skill_offer([]) else 130
 
-    console.print(f"[dim]{LEGEND_SELECT}[/dim]")
-    selected = questionary.checkbox(
-        "Select which tools to connect:",
-        choices=rows_to_choices(build_connect_rows(detected)),
-    ).ask()
+    console.print(f"[dim]{LEGEND_CONNECT}[/dim]")
+    selected = ask_with_back(
+        questionary.checkbox(
+            "Select which tools to connect:",
+            choices=rows_to_choices(build_connect_rows(detected)),
+            instruction="(↑↓ move · Space toggle · A all · Enter confirm · Esc to go back)",
+            style=WIZARD_STYLE,
+        )
+    )
 
     if selected is None:
         console.print("\n[yellow]Cancelled.[/yellow]")
@@ -447,8 +508,11 @@ def _flow_add() -> int:
     results = run_add(selected)
     _display_results_summary("Connection Results", results)
 
+    # Only claim success in the skill offer if at least one connection landed.
+    connected_ok = any(r.status in {"configured", "already", "repaired"} for r in results)
+
     # Offer optional skill
-    return 0 if _flow_skill_offer(selected, post_connect=True) else 130
+    return 0 if _flow_skill_offer(selected, post_connect=True, connected_ok=connected_ok) else 130
 
 
 def build_skill_rows(tool_options, level: str, selected_mcp_ids: list[str]) -> list[PickerRow]:
@@ -478,29 +542,80 @@ def build_skill_rows(tool_options, level: str, selected_mcp_ids: list[str]) -> l
     return rows
 
 
-def _flow_skill_offer(selected_mcp_ids: list[str], post_connect: bool = False) -> bool:
-    """Offer skill installation. Used standalone and as a post-connect follow-up."""
+UPLOAD_ROW_VALUE = "claude-desktop-upload"
+
+
+def with_upload_row(rows: list[PickerRow]) -> list[PickerRow]:
+    """Append the always-offered, never pre-ticked Claude Desktop / claude.ai row."""
+    return [
+        *rows,
+        PickerRow(
+            None, "Claude Desktop / claude.ai", UPLOAD_ROW_VALUE, note="· creates a file to upload"
+        ),
+    ]
+
+
+def _make_upload_zip() -> SetupResult:
+    from notebooklm_tools.cli import skill_package as sp
+
+    try:
+        zip_path = sp.build_skill_zip(sp.default_output_dir())
+    except (OSError, ValueError) as exc:
+        return SetupResult(UPLOAD_ROW_VALUE, "failed", None, (), f"Couldn't create file: {exc}")
+    return SetupResult(UPLOAD_ROW_VALUE, "created", zip_path, (), "File ready to upload")
+
+
+def _show_upload_steps(zip_path: Path) -> None:
+    """Last thing on screen: where the file is and how to upload it."""
+    from notebooklm_tools.cli import skill_package as sp
+
+    console.print()
+    console.print(
+        Panel(
+            "\n".join(sp.upload_instructions(zip_path)),
+            title="Claude Desktop / claude.ai",
+            border_style="cyan",
+        )
+    )
+    sp.reveal_in_file_manager(zip_path)
+
+
+def _flow_skill_offer(
+    selected_mcp_ids: list[str],
+    post_connect: bool = False,
+    connected_ok: bool = True,
+    ask_first: bool = True,
+) -> bool:
+    """Skill installation: an optional offer after connecting (ask_first), or the
+    standalone "Add the skill" door, which goes straight to the choices."""
     console.print("\n[bold]Gemini Notebook skill[/bold]")
     console.print("Teaches your AI tools how to use Gemini Notebook well.\n")
 
-    prompt = (
-        "Connection added. Also add the skill? (recommended)"
-        if post_connect
-        else "Add the skill? (recommended)"
-    )
-    want_skill = questionary.confirm(prompt, default=True).ask()
-    if want_skill is None:
-        return False
-    if not want_skill:
-        return True
+    if ask_first:
+        if post_connect and connected_ok:
+            prompt = "Connection added. Also add the skill? (recommended)"
+        elif post_connect:
+            # The connection failed; don't claim it succeeded.
+            prompt = "The connection didn't complete. Add the skill anyway?"
+        else:
+            prompt = "Add the skill? (recommended)"
+        want_skill = ask_with_back(questionary.confirm(prompt, default=True, style=WIZARD_STYLE))
+        if want_skill is None:
+            return False
+        if not want_skill:
+            return True
 
-    level_choice = questionary.select(
-        "Where should the skill live?",
-        choices=[
-            "All my projects      (recommended)",
-            "Just this folder",
-        ],
-    ).ask()
+    level_choice = ask_with_back(
+        questionary.select(
+            "Where should the skill live?",
+            choices=[
+                "All my projects      (recommended)",
+                "Just this folder",
+            ],
+            instruction="(↑↓ move · Enter select · Esc to go back)",
+            style=WIZARD_STYLE,
+        )
+    )
 
     if level_choice is None:
         return False
@@ -520,20 +635,26 @@ def _flow_skill_offer(selected_mcp_ids: list[str], post_connect: bool = False) -
         ("openclaw", "OpenClaw framework", ["openclaw"]),
     ]
 
-    skill_rows = build_skill_rows(tool_options, level, selected_mcp_ids)
-
-    if not skill_rows:
-        console.print("[dim]No detected tools support local skill files.[/dim]")
-        return True
+    skill_rows = with_upload_row(build_skill_rows(tool_options, level, selected_mcp_ids))
 
     console.print(f"[dim]{LEGEND_SELECT}[/dim]")
-    chosen_skills = questionary.checkbox(
-        "Add the skill to which tools?", choices=rows_to_choices(skill_rows)
-    ).ask()
+    chosen_skills = ask_with_back(
+        questionary.checkbox(
+            "Add the skill to which tools?",
+            choices=rows_to_choices(skill_rows),
+            instruction="(↑↓ move · Space toggle · A all · Enter confirm · Esc to go back)",
+            style=WIZARD_STYLE,
+        )
+    )
     if chosen_skills is None:
         return False
     if not chosen_skills:
         return True
+
+    # The upload file isn't a local install: make it after the local tools, so a
+    # failure there can't block them.
+    make_upload = UPLOAD_ROW_VALUE in chosen_skills
+    chosen_skills = [sk for sk in chosen_skills if sk != UPLOAD_ROW_VALUE]
 
     skill_results = []
     for sk in chosen_skills:
@@ -543,6 +664,11 @@ def _flow_skill_offer(selected_mcp_ids: list[str], post_connect: bool = False) -
                 outcome = skill.skill_action(
                     sk, level, "install", confirm_replace=_confirm_skill_replace
                 )
+        except _BackRequested:
+            # Esc at the replace question: nothing was changed for this skill yet.
+            _display_results_summary("Skill Setup Results", skill_results)
+            console.print("\n[yellow]Cancelled.[/yellow]")
+            return False
         except KeyboardInterrupt:
             skill_results.append(
                 SetupResult(
@@ -560,15 +686,20 @@ def _flow_skill_offer(selected_mcp_ids: list[str], post_connect: bool = False) -
             SetupResult(sk, outcome.status, outcome.path, backups, outcome.message)
         )
 
+    upload = _make_upload_zip() if make_upload else None
+    if upload:
+        skill_results.append(upload)
     _display_results_summary("Skill Setup Results", skill_results)
+    if upload and upload.status == "created":
+        _show_upload_steps(upload.destination)
     return True
 
 
 def _confirm_skill_replace(message: str) -> bool:
     """Require an explicit yes before replacing an installed skill."""
-    answer = questionary.confirm(message, default=False).ask()
+    answer = ask_with_back(questionary.confirm(message, default=False, style=WIZARD_STYLE))
     if answer is None:
-        raise KeyboardInterrupt
+        raise _BackRequested
     return answer
 
 
@@ -803,7 +934,11 @@ def run_remove(selected: list[str]) -> list[SetupResult]:
     results = []
     try:
         if mcp_targets:
-            allowed = questionary.confirm("Remove the selected MCP entries?", default=False).ask()
+            allowed = ask_with_back(
+                questionary.confirm(
+                    "Remove the selected MCP entries?", default=False, style=WIZARD_STYLE
+                )
+            )
             if allowed is None:
                 raise KeyboardInterrupt
             if allowed:
@@ -811,10 +946,13 @@ def run_remove(selected: list[str]) -> list[SetupResult]:
             else:
                 results.extend(skipped(mcp_targets))
         if skill_targets:
-            allowed = questionary.confirm(
-                "Delete the listed skill folders? Personal edits in the active folders will be removed.",
-                default=False,
-            ).ask()
+            allowed = ask_with_back(
+                questionary.confirm(
+                    "Delete the listed skill folders? Personal edits in the active folders will be removed.",
+                    default=False,
+                    style=WIZARD_STYLE,
+                )
+            )
             if allowed is None:
                 raise KeyboardInterrupt
             if allowed:
@@ -849,10 +987,14 @@ def _flow_remove() -> int:
 
     try:
         console.print(f"[dim]{LEGEND_REMOVE}[/dim]")
-        selected_labels = questionary.checkbox(
-            "Select what to remove:",
-            choices=rows_to_choices(build_remove_rows(targets)),
-        ).ask()
+        selected_labels = ask_with_back(
+            questionary.checkbox(
+                "Select what to remove:",
+                choices=rows_to_choices(build_remove_rows(targets)),
+                instruction="(↑↓ move · Space toggle · Enter confirm · Esc to go back)",
+                style=WIZARD_STYLE,
+            )
+        )
 
         if selected_labels is None:
             return 130

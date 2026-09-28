@@ -45,6 +45,16 @@ def test_build_status_rows_all_states():
     assert rows["Claude Desktop"]["skill"] == "– n/a"
 
 
+def test_status_markup_colors_by_glyph():
+    from notebooklm_tools.cli.commands import setup_wizard as w
+
+    assert w._status_markup("✓ set up") == "[green]✓ set up[/green]"
+    assert w._status_markup("✗ not yet") == "[red]✗ not yet[/red]"
+    assert w._status_markup("⬆ v0.12.0 → v0.13.0") == "[yellow]⬆ v0.12.0 → v0.13.0[/yellow]"
+    assert w._status_markup("– n/a") == "[dim]– n/a[/dim]"
+    assert w._status_markup("plain") == "plain"
+
+
 def test_build_status_rows_current_skill_shows_version():
     targets = [w.SetupTarget("cursor", "Cursor", True, True, Path("/a"), "cursor")]
 

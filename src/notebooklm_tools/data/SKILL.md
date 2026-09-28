@@ -794,7 +794,7 @@ Diagnose and fix issues with your Gemini Notebook installation, MCP server, and 
 
 ```bash
 nlm doctor                                   # Full diagnostic check
-nlm setup                                    # Guided setup: Add, Remove, or Get JSON
+nlm setup                                    # Guided wizard: status, add MCP/skill, remove, copy setup
 nlm setup list                               # Show MCP configuration status
 nlm setup add json                           # Generate JSON directly for another client
 nlm setup add claude-desktop                 # Setup detected Claude Desktop profile(s)
@@ -812,7 +812,9 @@ MCP configuration at app/user scope by default. GitHub Copilot uses the VS Code
 user profile in the wizard; the direct command without `--scope user` targets
 the workspace. The optional skill defaults to all projects (user level), or
 can be installed into the current project. Existing configs and skill folders
-are backed up before edits or removals.
+are backed up before edits or removals. The wizard lists only detected tools,
+starts with nothing selected, and offers to rename connections that still use
+the old `notebooklm-mcp` name to `gemini-notebook-mcp`.
 
 ### 11. Skill Management
 
@@ -824,7 +826,12 @@ nlm skill update                            # Update all outdated skills
 nlm skill update <tool>                     # Update specific skill (e.g., claude-code)
 nlm skill install <tool>                    # Install skill
 nlm skill uninstall <tool>                  # Uninstall skill
+nlm skill package                           # ~/Downloads/nlm-skill.zip for Claude Desktop / claude.ai
 ```
+
+Claude Desktop's Chat and Cowork tabs (and claude.ai) only load skills uploaded
+to the user's Claude account: upload `nlm-skill.zip` via **Customize → Skills →
+Add**. The desktop app's Code tab is Claude Code and uses `~/.claude/skills/`.
 
 **Verb-first aliases**: `nlm update skill`, `nlm list skills`, `nlm install skill`
 

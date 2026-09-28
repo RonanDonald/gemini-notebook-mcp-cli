@@ -29,10 +29,13 @@ If you have never used `notebooklm-mcp-cli` before, the path is:
    ```bash
    nlm setup
    ```
-   The wizard detects supported tools and lets you select one or all. It
-   configures MCP at user/app scope by default, then offers the optional
-   skill at user level (all projects) or in the current project. Choose
-   **Get JSON for another tool** for a client without a built-in installer.
+   Choose **Add the MCP to my tools/agents**, tick your apps with Space, and
+   press Enter. The wizard configures MCP at user/app scope, then offers the
+   optional skill for all projects or the current folder. Use **Show my tools'
+   status** to check what is connected, and **Copy MCP setup for a tool not
+   listed** for a client without a built-in installer. For Claude Desktop's
+   Chat and Cowork tabs (and claude.ai), tick **Claude Desktop / claude.ai** in
+   **Add the skill** to get an upload file (`~/Downloads/nlm-skill.zip`).
 4. **Verify** — restart your agent and call `notebook_list` (MCP) or
    `nlm notebook list` (CLI). If you see your existing notebooks, you are
    good to go.
@@ -137,6 +140,11 @@ gemini mcp remove notebooklm
 
 # Hermes / others: edit the client config directly
 ```
+
+> Only removing a *different* Gemini Notebook server needs this step. If the old
+> entry is this project's own pre-rebrand name (`notebooklm-mcp` or
+> `notebooklm`), `nlm setup` shows it as **⚠ old name** and renames it to
+> `gemini-notebook-mcp` for you: **Add the MCP to my tools/agents → Needs a fix**.
 
 If you are not sure what is registered, list everything:
 

@@ -452,11 +452,16 @@ The easiest way to configure supported tools is with the guided wizard:
 nlm setup
 ```
 
-Choose **Add** to configure one or all detected MCP clients, **Remove** to
-review and safely remove existing MCP or skill installs, or **Get JSON for
-another tool** to generate a config snippet. MCP setup defaults to the
-app/user-level configuration. The optional skill defaults to all projects
-(user level); project-level installation targets the current folder. Codex CLI
+Choose **Show my tools' status** to see what is connected, **Add the MCP to
+my tools/agents** to connect detected clients (nothing is pre-selected; entries
+still using the old `notebooklm-mcp` name are offered under **Needs a fix** and
+renamed to `gemini-notebook-mcp`), **Add the skill to my tools/agents** for the
+optional skill (including an upload file for Claude Desktop Chat/Cowork and
+claude.ai), **Remove an MCP or skill**, or **Copy MCP setup for a tool not
+listed** to copy a config snippet. Esc goes back from any screen. MCP setup
+defaults to the app/user-level configuration. The optional skill defaults to
+all projects (user level); project-level installation targets the current
+folder. Codex CLI
 and the ChatGPT desktop app share one MCP configuration on the same host.
 GitHub Copilot uses the VS Code user profile in the wizard; the direct command
 without `--scope user` targets the current workspace.

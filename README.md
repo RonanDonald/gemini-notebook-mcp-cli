@@ -37,6 +37,36 @@
 | :------------------------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------------: | :--------------------------------------------------------------------------------------------------------------------------: | :------------------------------------------------------------------------------------------------------------------: |
 | [![CLI Overview](https://img.youtube.com/vi/XyXVuALWZkE/mqdefault.jpg)](https://www.youtube.com/watch?v=XyXVuALWZkE) | [![CLI, MCP & Skills](https://img.youtube.com/vi/ZQBQigFK-E8/mqdefault.jpg)](https://www.youtube.com/watch?v=ZQBQigFK-E8) | [![Setup, Doctor & mcpb](https://img.youtube.com/vi/5tOUilBTJ3Q/mqdefault.jpg)](https://www.youtube.com/watch?v=5tOUilBTJ3Q) | [![Infographics](https://img.youtube.com/vi/Uc6iH5NuQ9A/mqdefault.jpg)](https://www.youtube.com/watch?v=Uc6iH5NuQ9A) |
 
+## ⚡ Quick Start
+
+Three commands take you from nothing to a connected AI assistant:
+
+```bash
+uv tool install notebooklm-mcp-cli   # 1. Install (gives you `nlm` and the MCP server)
+nlm login                            # 2. Sign in to your Google account
+nlm setup                            # 3. Connect your AI tools
+```
+
+### The setup wizard (`nlm setup`)
+
+`nlm setup` finds the AI tools installed on your machine and connects them to
+Gemini Notebook — no config files to edit. Pick an option with the arrow keys:
+
+| Menu option | What it does |
+|---|---|
+| **Show my tools' status** | One table for every detected tool: MCP connection (✓ set up · ✗ not yet · ⚠ old name) and skill version (⬆ when an upgrade is available). |
+| **Add the MCP to my tools/agents** | Tick the tools to connect (Space), then Enter. Nothing is pre-selected. Connections still using the old `notebooklm-mcp` name appear under **Needs a fix** and are renamed to `gemini-notebook-mcp`, keeping their settings. Then it offers the skill. |
+| **Add the skill to my tools/agents** | Installs the skill that teaches your AI how to use Gemini Notebook well — for **All my projects** (default) or **Just this folder**. Upgrades are pre-ticked; older versions are only replaced after you confirm. |
+| **Remove an MCP or skill** | Lists what's installed, grouped into MCP connections and skills. Nothing is pre-selected, and each group needs its own confirmation. |
+| **Copy MCP setup for a tool not listed** | Copies a ready-to-paste JSON snippet to your clipboard. **Advanced options** switch to uvx, the bare command, or entry-only JSON. |
+
+- **Esc** goes back from any screen (and quits from the main menu).
+- Every file is **backed up** to `~/.notebooklm-mcp-cli/backups/` before it is changed.
+- **Connects to:** Claude Code, Claude Desktop (regular and Relay AI / 3P), Codex CLI / ChatGPT desktop app, Gemini CLI, Cursor, Windsurf, Cline, Antigravity, GitHub Copilot (VS Code), and OpenCode. The skill also installs for Hermes and OpenClaw.
+- **Claude Desktop Chat & Cowork, and claude.ai:** these only use skills uploaded to your Claude account. In **Add the skill**, tick **Claude Desktop / claude.ai** — the wizard saves `~/Downloads/nlm-skill.zip` and shows where to upload it (**Customize → Skills → Add**). Or run `nlm skill package`.
+- **Claude Desktop:** fully quit it (Cmd+Q) before connecting — it can overwrite its settings while open, so the wizard refuses to write until it's closed.
+- **Scripts and CI:** every option has a direct command — `nlm setup add <tool>`, `nlm setup remove <tool>`, `nlm setup list`, `nlm skill install <tool>`. See [MCP Configuration](#mcp-configuration).
+
 ## Two Ways to Use
 
 ### 🖥️ Command-Line Interface (CLI)
@@ -60,19 +90,9 @@ Run `nlm --ai` for comprehensive AI-assistant documentation.
 Connect AI assistants (Claude, Gemini, Cursor, etc.) to Gemini Notebook:
 
 ```bash
-# Recommended: choose tools in the guided setup wizard
-nlm setup
-
-# Direct setup for a specific client
-nlm setup add codex             # Codex CLI and ChatGPT desktop app
-nlm setup add github-copilot --scope user
-nlm setup add json
+nlm setup                       # Guided wizard — see Quick Start above
+nlm setup add codex             # Or connect one client directly
 ```
-
-The wizard defaults MCP configuration to the app or user level. GitHub
-Copilot uses the VS Code user profile in the wizard; the direct Copilot command
-without `--scope user` targets the current workspace. The wizard can also
-install the optional skill globally (default) or in the current project.
 
 Then use natural language: _"Create a notebook about quantum computing and generate a podcast"_
 
@@ -398,18 +418,17 @@ For detailed instructions and troubleshooting, see **[docs/AUTHENTICATION.md](do
 
 ### Automatic Setup (Recommended)
 
-Run the guided wizard to detect installed tools and choose which MCPs to add,
-remove, or generate as JSON. Skill installation is optional:
+The setup wizard is the recommended way to connect tools — see
+[Quick Start](#-quick-start) for what each menu option does:
 
 ```bash
 nlm setup
 ```
 
-The wizard defaults MCP configuration to each app's user-level settings. It
-offers the skill at **All projects (user level)** by default, with
-**This folder (project level)** as an option. Codex CLI and the ChatGPT desktop
-app share one MCP configuration on the same host. GitHub Copilot uses the VS
-Code user profile in the wizard.
+MCP configuration goes to each app's user-level settings. Codex CLI and the
+ChatGPT desktop app share one MCP configuration on the same host. GitHub
+Copilot uses the VS Code user profile in the wizard; the direct command without
+`--scope user` targets the current workspace.
 
 For direct setup or scripts, keep using the existing commands:
 
@@ -462,6 +481,23 @@ nlm skill update
 User-level skill installation requires the target tool to be detected first;
 the CLI will not create a missing tool directory or install anyway. Use
 `--level project` when you intentionally want a project-local skill.
+
+#### Claude Desktop (Chat and Cowork) and claude.ai
+
+Claude Desktop's **Code** tab is Claude Code, so it uses the skill installed in
+`~/.claude/skills/`. The **Chat** and **Cowork** tabs, and claude.ai, only use
+skills uploaded to your Claude account. Create the upload file with the wizard
+(tick **Claude Desktop / claude.ai** in **Add the skill**) or directly:
+
+```bash
+nlm skill package                  # saves ~/Downloads/nlm-skill.zip
+nlm skill package --output ~/Desktop
+```
+
+Then in Claude Desktop (or claude.ai) open **Customize → Skills → Add**, pick
+`nlm-skill.zip`, and turn the skill on. Re-upload after updating `nlm` to get
+the latest skill. The MCP for Chat and Cowork comes from the normal Claude
+Desktop connection (`nlm setup` → **Add the MCP**).
 
 ### Remove from a tool
 

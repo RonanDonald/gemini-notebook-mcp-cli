@@ -113,7 +113,7 @@ nlm status artifacts <notebook>
 | `nlm cross` | Cross-notebook aggregated query (query) |
 | `nlm pipeline` | Multi-step notebook workflows (list, run) |
 | `nlm tag` | Tag notebooks and find relevant ones (add, remove, list, select) |
-| `nlm skill` | Install AI assistant skills (install, uninstall, list, show) |
+| `nlm skill` | Install AI assistant skills (install, uninstall, list, show, package) |
 | `nlm doctor` | Diagnose installation, auth, browser, and AI tool configs |
 | `nlm setup` | Configure MCP server for AI tools (add, remove, list) |
 
@@ -724,6 +724,7 @@ nlm skill list                              # Show installation status for all t
 nlm skill install <tool>                    # Install at user level (default)
 nlm skill install <tool> --level project    # Install at project level
 nlm skill update                            # Update all outdated skills
+nlm skill package                           # Create ~/Downloads/nlm-skill.zip to upload in Claude Desktop / claude.ai (Customize > Skills > Add)
 nlm skill update <tool>                     # Update a specific tool's skill
 nlm skill uninstall <tool>                  # Remove installed skill
 nlm skill show                              # Display skill content
@@ -849,7 +850,9 @@ nlm setup remove all                    # Remove MCP from ALL configured tools (
 
 The configured MCP server name is `gemini-notebook-mcp`; the executable remains
 `notebooklm-mcp` for compatibility with existing installations. Legacy server
-names are recognized for migration and removal.
+names are recognized for migration and removal; the wizard flags them as
+"old name" and renames them to `gemini-notebook-mcp` on request, keeping the
+entry's other settings.
 
 Claude Desktop setup only targets detected regular or Relay AI/3P profiles and
 never creates a missing profile. Fully quit the selected profile before adding
@@ -862,9 +865,13 @@ command without `--scope user` configures the current workspace.
 
 **Supported Clients:** claude-code, claude-desktop, gemini, cursor, windsurf, cline, antigravity, codex, github-copilot, opencode
 
-**Guided Removal & Recovery:** Run `nlm setup` and choose **Remove** to review and remove MCP configurations or skills with separate default-No confirmations. Before any modification, backups are saved to `~/.notebooklm-mcp-cli/backups/`. Files with JSONC comments are left unchanged and reported for manual removal.
+**Wizard menu:** Show my tools' status · Add the MCP to my tools/agents · Add the skill to my tools/agents · Remove an MCP or skill · Copy MCP setup for a tool not listed · Exit. Only detected tools are listed; nothing is pre-selected in the connect and remove lists; Esc goes back. The wizard needs a real terminal (it exits with a hint when run non-interactively).
 
-**For other tools:** Choose **Get JSON for another tool** in `nlm setup`, or run `nlm setup add json` directly. The generator offers uvx or regular mode, command name or full path, and entry-only or wrapped JSON. It prints the snippet and offers clipboard copy when available.
+**Claude Desktop Chat/Cowork and claude.ai:** they only load skills uploaded to the user's account. `nlm skill package` (or the wizard's **Claude Desktop / claude.ai** skill row) writes `~/Downloads/nlm-skill.zip`; upload via Customize → Skills → Add.
+
+**Guided Removal & Recovery:** Run `nlm setup` and choose **Remove an MCP or skill** to review and remove MCP configurations or skills with separate default-No confirmations. Before any modification, backups are saved to `~/.notebooklm-mcp-cli/backups/`. Files with JSONC comments are left unchanged and reported for manual removal.
+
+**For other tools:** Choose **Copy MCP setup for a tool not listed** in `nlm setup`, or run `nlm setup add json` directly. The generator offers uvx or regular mode, command name or full path, and entry-only or wrapped JSON. It prints the snippet and offers clipboard copy when available.
 
 ---
 

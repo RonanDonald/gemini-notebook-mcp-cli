@@ -1010,3 +1010,33 @@ def show() -> None:
 
     content = skill_file.read_text(encoding="utf-8")
     console.print(content)
+
+
+@app.command("package")
+def package(
+    output: Path | None = typer.Option(  # noqa: B008
+        None, "--output", "-o", help="Folder to save nlm-skill.zip in (default: ~/Downloads)"
+    ),
+) -> None:
+    """
+    Create nlm-skill.zip to upload to Claude Desktop or claude.ai.
+
+    Chat and Cowork in Claude Desktop (and claude.ai) only use skills uploaded
+    through Customize > Skills > Add.
+
+    Examples:
+        nlm skill package
+        nlm skill package --output ~/Desktop
+    """
+    from notebooklm_tools.cli import skill_package as sp
+
+    try:
+        zip_path = sp.build_skill_zip((output or sp.default_output_dir()).expanduser())
+    except (OSError, ValueError) as exc:
+        console.print(f"[red]Error:[/red] Could not create the skill file: {exc}")
+        raise typer.Exit(1) from exc
+    lines = sp.upload_instructions(zip_path)
+    console.print(f"[green]✓[/green] {lines[0]}")
+    for line in lines[1:]:
+        console.print(f"  {line}")
+    sp.reveal_in_file_manager(zip_path)

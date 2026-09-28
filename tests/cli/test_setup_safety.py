@@ -67,6 +67,7 @@ def test_backup_existing_file(tmp_path, monkeypatch):
     fake_home = tmp_path / "home"
     fake_home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: fake_home)
+    monkeypatch.setenv("NOTEBOOKLM_MCP_CLI_PATH", str(fake_home / ".notebooklm-mcp-cli"))
 
     config_file = tmp_path / "app_config.json"
     config_file.write_text('{"key": "original"}', encoding="utf-8")
@@ -85,6 +86,7 @@ def test_backup_existing_dir(tmp_path, monkeypatch):
     fake_home = tmp_path / "home"
     fake_home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: fake_home)
+    monkeypatch.setenv("NOTEBOOKLM_MCP_CLI_PATH", str(fake_home / ".notebooklm-mcp-cli"))
 
     skill_dir = tmp_path / "nlm-skill"
     skill_dir.mkdir()
@@ -106,6 +108,7 @@ def test_backup_existing_rejects_symlink(tmp_path, monkeypatch):
     fake_home = tmp_path / "home"
     fake_home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: fake_home)
+    monkeypatch.setenv("NOTEBOOKLM_MCP_CLI_PATH", str(fake_home / ".notebooklm-mcp-cli"))
 
     real_file = tmp_path / "real.json"
     real_file.write_text("{}")
@@ -120,6 +123,7 @@ def test_backup_existing_rejects_symlink_backup_root(tmp_path, monkeypatch):
     fake_home = tmp_path / "home"
     fake_home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: fake_home)
+    monkeypatch.setenv("NOTEBOOKLM_MCP_CLI_PATH", str(fake_home / ".notebooklm-mcp-cli"))
 
     real_backups = tmp_path / "other_backups"
     real_backups.mkdir()
@@ -138,6 +142,7 @@ def test_capture_backups_records_paths(tmp_path, monkeypatch):
     fake_home = tmp_path / "home"
     fake_home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: fake_home)
+    monkeypatch.setenv("NOTEBOOKLM_MCP_CLI_PATH", str(fake_home / ".notebooklm-mcp-cli"))
 
     file_a = tmp_path / "a.json"
     file_a.write_text('{"a": 1}')

@@ -9,6 +9,7 @@ from notebooklm_tools.cli.commands import setup
 
 def test_claude_code_add_backs_up_existing_user_config(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("NOTEBOOKLM_MCP_CLI_PATH", str(tmp_path / ".notebooklm-mcp-cli"))
     config = tmp_path / ".claude.json"
     original = '{"mcpServers": {"other": {"command": "other-tool"}}}'
     config.write_text(original)
@@ -29,6 +30,7 @@ def test_claude_code_add_backs_up_existing_user_config(tmp_path, monkeypatch):
 
 def test_claude_code_status_ignores_unrelated_legacy_name(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("NOTEBOOKLM_MCP_CLI_PATH", str(tmp_path / ".notebooklm-mcp-cli"))
     (tmp_path / ".claude.json").write_text(
         json.dumps({"mcpServers": {"notebooklm": {"command": "unrelated-tool"}}})
     )
@@ -48,6 +50,7 @@ def test_claude_code_status_ignores_unrelated_legacy_name(tmp_path, monkeypatch)
 
 def test_claude_code_remove_only_targets_its_own_entries(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("NOTEBOOKLM_MCP_CLI_PATH", str(tmp_path / ".notebooklm-mcp-cli"))
     config = tmp_path / ".claude.json"
     config.write_text(
         json.dumps(
