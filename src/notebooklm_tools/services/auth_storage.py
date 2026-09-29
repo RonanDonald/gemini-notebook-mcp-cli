@@ -83,16 +83,14 @@ def set_storage_mode(mode: str, profile_name: str | None = None) -> StorageSetRe
         raise ValidationError(f"Invalid storage mode '{mode}'. Must be 'protected' or 'file'")
 
     if mode_clean == "protected":
-        raise ServiceError(
-            "Protected mode is not available yet (planned for Task 4). No changes made."
-        )
+        raise ServiceError("Protected mode is coming in a later update. No changes made.")
 
     # mode == "file"
     profile_dir = get_profile_dir(resolved_profile)
     if (profile_dir / "credentials.enc").exists():
         raise ServiceError(
             "Profile contains protected ciphertext. Switching from protected to file mode "
-            "requires Task 4 transition verification. No changes made."
+            "is coming in a later update. No changes made."
         )
 
     try:

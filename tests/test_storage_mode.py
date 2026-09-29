@@ -175,8 +175,17 @@ def test_save_config_preserves_unknown_tables_and_no_env_overlay_persistence(mon
     assert "temporary_env_profile" not in saved_text
 
 
-def test_profile_rename_moves_marker_and_updates_default_profile():
-    """Renaming a profile moves its storage-mode.json and updates default_profile if matching."""
+def test_profile_rename_cli_moves_marker_and_updates_default_profile():
+    """nlm login profile rename moves storage-mode.json and updates default_profile if matching."""
+    from typer.testing import CliRunner
+
+    from notebooklm_tools.cli.main import app
+
+    runner = CliRunner()
+
+    # Create old profile with credentials and marker
+    old_auth = AuthManager("old_name")
+    old_auth.save_profile(cookies={"test": "cookie"})
     set_auth_storage_mode("old_name", "file")
     assert get_auth_storage_mode("old_name") == "file"
 
@@ -185,9 +194,10 @@ def test_profile_rename_moves_marker_and_updates_default_profile():
     config.auth.default_profile = "old_name"
     save_config(config)
 
-    # Perform rename
-    auth = AuthManager("old_name")
-    auth.rename_profile("new_name")
+    # Perform CLI rename
+    result = runner.invoke(app, ["login", "profile", "rename", "old_name", "new_name"])
+    assert result.exit_code == 0
+    assert "Renamed profile from 'old_name' to 'new_name'" in result.output
 
     assert not (get_profile_dir("old_name") / "storage-mode.json").exists()
     assert (get_profile_dir("new_name") / "storage-mode.json").exists()
@@ -202,6 +212,27 @@ def test_profile_rename_moves_marker_and_updates_default_profile():
     config.auth.default_profile = "default"
     save_config(config)
     reset_config()
+
+
+def test_profile_rename_cli_refuses_when_credentials_enc_exists():
+    """nlm login profile rename refuses when credentials.enc exists."""
+    from typer.testing import CliRunner
+
+    from notebooklm_tools.cli.main import app
+
+    runner = CliRunner()
+
+    prof_dir = get_profile_dir("protected_prof")
+    prof_dir.mkdir(parents=True, exist_ok=True)
+    (prof_dir / "credentials.enc").write_bytes(b"dummy")
+
+    result = runner.invoke(app, ["login", "profile", "rename", "protected_prof", "target_prof"])
+    assert result.exit_code != 0
+    assert "Renaming protected profiles is coming in a later update" in result.output
+
+    # Original remains untouched
+    assert (prof_dir / "credentials.enc").exists()
+    assert not (prof_dir.parent / "target_prof").exists()
 
 
 def test_profile_delete_removes_marker():

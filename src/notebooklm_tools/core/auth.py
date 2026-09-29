@@ -564,43 +564,6 @@ class AuthManager:
             shutil.rmtree(profile_path)
         self._profile = None
 
-    def rename_profile(self, new_name: str) -> None:
-        """Rename the current profile to new_name, moving all files including storage-mode.json."""
-        import shutil
-
-        from notebooklm_tools.utils.config import (
-            get_config,
-            get_profiles_dir,
-            save_config,
-            validate_profile_name,
-        )
-
-        validate_profile_name(new_name)
-        old_dir = get_profiles_dir() / self.profile_name
-        new_dir = get_profiles_dir() / new_name
-
-        if new_dir.exists() and any(new_dir.iterdir()):
-            raise ValueError(f"Profile '{new_name}' already exists")
-
-        new_dir.mkdir(parents=True, exist_ok=True)
-        if old_dir.exists():
-            for item in old_dir.iterdir():
-                dest = new_dir / item.name
-                if item.is_dir():
-                    shutil.copytree(item, dest)
-                else:
-                    shutil.copy2(item, dest)
-            shutil.rmtree(old_dir)
-
-        # Update default_profile if this was the default
-        config = get_config()
-        if config.auth.default_profile == self.profile_name:
-            config.auth.default_profile = new_name
-            save_config(config)
-
-        self.profile_name = new_name
-        self._profile = None
-
     def get_cookies(self) -> dict[str, str]:
         """Get cookies for the current profile as simple dict."""
         profile = self.load_profile()

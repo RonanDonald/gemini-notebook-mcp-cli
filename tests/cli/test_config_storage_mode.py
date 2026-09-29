@@ -57,20 +57,20 @@ def test_auth_storage_set_file_cli():
 
 
 def test_auth_storage_set_file_refuses_when_ciphertext_exists():
-    """nlm auth storage set file refuses when ciphertext exists until Task 4."""
+    """nlm auth storage set file refuses when ciphertext exists until protected transitions are supported."""
     prof_dir = get_profile_dir("enc_prof")
     (prof_dir / "credentials.enc").write_bytes(b"dummy_ciphertext")
 
     res = runner.invoke(app, ["auth", "storage", "set", "file", "--profile", "enc_prof"])
     assert res.exit_code != 0
-    assert "Task 4 transition verification" in res.output
+    assert "is coming in a later update" in res.output
 
 
-def test_auth_storage_set_protected_refuses_in_task1():
-    """nlm auth storage set protected refuses in Task 1 with 'not available yet'."""
+def test_auth_storage_set_protected_refuses_until_supported():
+    """nlm auth storage set protected refuses with 'coming in a later update'."""
     res = runner.invoke(app, ["auth", "storage", "set", "protected", "--profile", "test_prof"])
     assert res.exit_code != 0
-    assert "not available yet" in res.output
+    assert "coming in a later update" in res.output
 
     # Must write nothing
     marker = get_profile_dir("test_prof") / "storage-mode.json"

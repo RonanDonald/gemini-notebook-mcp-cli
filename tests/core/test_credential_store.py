@@ -7,6 +7,8 @@ import pytest
 
 from notebooklm_tools.core.credential_store import (
     MAX_KEYSTORE_ITEM_LENGTH,
+    SERVICE_NAME,
+    BackendMismatchError,
     CorruptCiphertextError,
     CredentialStore,
     InstallationPathMismatchError,
@@ -14,6 +16,7 @@ from notebooklm_tools.core.credential_store import (
     OversizedCiphertextError,
     SymlinkPathRejectedError,
     UnsupportedVersionError,
+    check_installation_identity,
     get_installation_identity,
     relocate_installation,
 )
@@ -195,6 +198,9 @@ def test_existing_ciphertext_with_missing_key_does_not_overwrite(fake_credential
 
 def test_oversized_envelope_rejected(fake_credential_store):
     """Ciphertext envelope larger than 1 MiB is rejected without decrypting."""
+    storage_dir = get_storage_dir()
+    _ = get_installation_identity(storage_dir)
+
     enc_file = get_profile_dir("oversize_prof") / "credentials.enc"
     enc_file.parent.mkdir(parents=True, exist_ok=True)
     enc_file.write_bytes(b"A" * (1024 * 1024 + 10))
@@ -301,3 +307,117 @@ def test_delete_credentials_removes_key_and_ciphertext(fake_credential_store):
 
     assert not (get_profile_dir("del_prof") / "credentials.enc").exists()
     assert len(fake_credential_store._store) == 0
+
+
+def test_concurrent_installation_identity_creation(tmp_path):
+    """Multiple concurrent creators get the exact same installation ID without race conditions."""
+    import concurrent.futures
+
+    inst_dir = tmp_path / "concurrent_inst"
+
+    def _get_id():
+        return get_installation_identity(inst_dir).installation_id
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(_get_id) for _ in range(16)]
+        results = [f.result() for f in futures]
+
+    assert len(results) == 16
+    assert len(set(results)) == 1  # All threads got the exact same ID!
+    assert (inst_dir / "installation.json").exists()
+
+
+def test_readback_first_reuses_existing_key_and_never_duplicates(fake_credential_store):
+    """When a key already exists in OS store, write_credentials reuses it and never generates a duplicate."""
+    import base64
+
+    store = CredentialStore()
+    identity = get_installation_identity()
+    account_id = f"{identity.installation_id}:reuse_prof"
+
+    # Pre-populate a valid 32-byte key in keystore (e.g. from an interrupted earlier write)
+    initial_raw_key = b"R" * 32
+    initial_key_b64 = base64.b64encode(initial_raw_key).decode("ascii")
+    fake_credential_store.set_password(SERVICE_NAME, account_id, initial_key_b64)
+
+    payload = {"cookies": {"session": "abc123xyz"}}
+    # write_credentials must readback first and reuse initial_key_b64
+    store.write_credentials("reuse_prof", payload)
+
+    # Key in store must NOT have been changed to a new key
+    current_key_in_keystore = fake_credential_store.get_password(SERVICE_NAME, account_id)
+    assert current_key_in_keystore == initial_key_b64
+
+    # Credentials decrypt successfully
+    assert store.read_credentials("reuse_prof") == payload
+
+
+def test_deletion_intent_marker_distinguished_from_corruption(fake_credential_store):
+    """A interrupted deletion leaves deletion marker; subsequent read cleans up without MissingKeyError."""
+    store = CredentialStore()
+    store.write_credentials("del_intent_prof", {"cookies": {"SID": "123"}})
+    identity = get_installation_identity()
+    account_id = f"{identity.installation_id}:del_intent_prof"
+
+    enc_path = get_profile_dir("del_intent_prof") / "credentials.enc"
+    assert enc_path.exists()
+
+    # Simulate crash during delete after key is deleted but before credentials.enc is unlinked
+    fake_credential_store.delete_password(SERVICE_NAME, account_id)
+    store._write_operation_marker("del_intent_prof", operation="delete", phase="preparing")
+
+    # read_credentials detects deletion intent, unlinks leftover ciphertext, and returns None cleanly
+    assert store.read_credentials("del_intent_prof") is None
+    assert not enc_path.exists()
+    assert store._read_operation_marker("del_intent_prof") is None
+
+
+def test_read_credentials_does_not_create_installation_json(tmp_path):
+    """read_credentials is non-mutating and does not create installation.json if absent."""
+    store = CredentialStore(storage_dir=tmp_path)
+    assert store.read_credentials("nonexistent_prof") is None
+    assert not (tmp_path / "installation.json").exists()
+
+
+def test_backend_mismatch_blocks_mutation(fake_credential_store):
+    """Recorded backend mismatch raises BackendMismatchError to prevent silent switching."""
+    storage_dir = get_storage_dir()
+    _ = get_installation_identity(storage_dir)
+
+    install_file = storage_dir / "installation.json"
+    data = json.loads(install_file.read_text(encoding="utf-8"))
+    data["backend_id"] = "DifferentBackend.Keyring"
+    install_file.write_text(json.dumps(data))
+
+    # In test environment with fake_credential_store factory, get_backend_factory() is not None,
+    # but check_installation_identity verifies when factory is cleared or direct check is made
+    from notebooklm_tools.core.credential_store import (
+        get_backend_factory,
+        set_backend_factory,
+    )
+
+    old_factory = get_backend_factory()
+    set_backend_factory(None)
+    try:
+        with pytest.raises(BackendMismatchError):
+            check_installation_identity(storage_dir)
+    finally:
+        set_backend_factory(old_factory)
+
+
+def test_profile_exists_returns_true_for_credentials_enc_only_task3_routing_expectation():
+    """profile_exists returns True when only credentials.enc exists; load_profile routes in Task 3."""
+    from notebooklm_tools.core.exceptions import AuthenticationError
+    from notebooklm_tools.services.auth import AuthManager
+
+    prof_dir = get_profile_dir("only_enc_prof")
+    prof_dir.mkdir(parents=True, exist_ok=True)
+    (prof_dir / "credentials.enc").write_bytes(b"dummy_envelope")
+
+    auth = AuthManager("only_enc_prof")
+    assert auth.profile_exists() is True
+
+    # Expectation: Until Task 3 routes load_profile() through CredentialStore,
+    # load_profile() looks for cookies.json and raises AuthenticationError
+    with pytest.raises(AuthenticationError):
+        auth.load_profile()

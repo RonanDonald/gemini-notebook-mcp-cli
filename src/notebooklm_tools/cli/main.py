@@ -729,11 +729,30 @@ def profile_rename(
     """Rename an authentication profile."""
     from notebooklm_tools.core.exceptions import NLMError
     from notebooklm_tools.services.auth import AuthManager
+    from notebooklm_tools.utils.config import (
+        get_auth_storage_mode,
+        get_config,
+        save_config,
+        set_auth_storage_mode,
+        validate_profile_name,
+    )
+
+    try:
+        validate_profile_name(old_name)
+        validate_profile_name(new_name)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1) from e
 
     # Check if old profile exists
     old_auth = AuthManager(old_name)
     if not old_auth.profile_exists():
         console.print(f"[red]Error:[/red] Profile '{old_name}' not found")
+        raise typer.Exit(1)
+
+    # Refuse protected profiles until protected rename is implemented
+    if (old_auth.profile_dir / "credentials.enc").exists():
+        console.print("[red]Error:[/red] Renaming protected profiles is coming in a later update.")
         raise typer.Exit(1)
 
     # Check if new profile name already exists
@@ -743,6 +762,10 @@ def profile_rename(
         raise typer.Exit(1)
 
     try:
+        old_mode = None
+        if (old_auth.profile_dir / "storage-mode.json").exists():
+            old_mode = get_auth_storage_mode(old_name)
+
         # Load old profile data
         profile_data = old_auth.load_profile()
 
@@ -756,8 +779,18 @@ def profile_rename(
             base_host=profile_data.base_host,
         )
 
+        # Move storage mode marker if present
+        if old_mode is not None:
+            set_auth_storage_mode(new_name, old_mode)
+
         # Delete old profile
         old_auth.delete_profile()
+
+        # Update default_profile if this was the default
+        config = get_config()
+        if config.auth.default_profile == old_name:
+            config.auth.default_profile = new_name
+            save_config(config)
 
         console.print(f"[green]✓[/green] Renamed profile from '{old_name}' to '{new_name}'")
     except NLMError as e:

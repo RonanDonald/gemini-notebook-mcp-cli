@@ -56,6 +56,10 @@ class BackendUnavailableError(CredentialStoreError):
     """Raised when the OS credential store backend is unavailable or locked."""
 
 
+class BackendMismatchError(BackendUnavailableError):
+    """Raised when the OS credential store backend changes after initialization."""
+
+
 class MissingKeyError(CredentialStoreError):
     """Raised when a profile's encryption key is missing from the OS keystore."""
 
@@ -94,10 +98,38 @@ class SymlinkPathRejectedError(CredentialStoreError):
 
 @dataclass(frozen=True)
 class InstallationIdentity:
-    """Stable installation identity and canonical root path."""
+    """Stable installation identity, canonical root path, and backend identifier."""
 
     installation_id: str
     canonical_root: str
+    backend_id: str = "unknown"
+
+
+def _read_installation_identity(install_file: Path) -> InstallationIdentity:
+    try:
+        data = json.loads(install_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise InvalidInstallationError("Corrupt or unreadable installation.json") from exc
+
+    if not isinstance(data, dict):
+        raise InvalidInstallationError("installation.json must be a JSON object")
+
+    if data.get("version") != 1:
+        raise InvalidInstallationError(
+            f"Unsupported installation.json version: {data.get('version')}"
+        )
+
+    installation_id = data.get("installation_id")
+    canonical_root = data.get("canonical_root")
+    backend_id = data.get("backend_id", "unknown")
+    if not installation_id or not canonical_root:
+        raise InvalidInstallationError("Missing fields in installation.json")
+
+    return InstallationIdentity(
+        installation_id=str(installation_id),
+        canonical_root=str(canonical_root),
+        backend_id=str(backend_id),
+    )
 
 
 def get_installation_identity(storage_dir: Path | None = None) -> InstallationIdentity:
@@ -107,55 +139,42 @@ def get_installation_identity(storage_dir: Path | None = None) -> InstallationId
 
     install_file = storage_dir / "installation.json"
     if install_file.exists():
+        return _read_installation_identity(install_file)
+
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    locks_dir = storage_dir / "locks"
+    locks_dir.mkdir(parents=True, exist_ok=True)
+    with FileLock(locks_dir / "installation.lock", timeout=LOCK_TIMEOUT_SECONDS):
+        if install_file.exists():
+            return _read_installation_identity(install_file)
+
+        installation_id = secrets.token_hex(16)
+        canonical_root = str(storage_dir.resolve())
+        backend_id = get_current_backend_id()
+
+        data = {
+            "version": 1,
+            "installation_id": installation_id,
+            "canonical_root": canonical_root,
+            "backend_id": backend_id,
+        }
+
+        content = (json.dumps(data, indent=2) + "\n").encode("utf-8")
         try:
-            data = json.loads(install_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
-            raise InvalidInstallationError(f"Corrupt installation.json: {exc}") from exc
-
-        if not isinstance(data, dict):
-            raise InvalidInstallationError("installation.json must be a JSON object")
-
-        if data.get("version") != 1:
-            raise InvalidInstallationError(
-                f"Unsupported installation.json version: {data.get('version')}"
-            )
-
-        installation_id = data.get("installation_id")
-        canonical_root = data.get("canonical_root")
-        if not installation_id or not canonical_root:
-            raise InvalidInstallationError("Missing fields in installation.json")
+            fd = os.open(str(install_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            try:
+                os.write(fd, content)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except FileExistsError:
+            return _read_installation_identity(install_file)
 
         return InstallationIdentity(
-            installation_id=str(installation_id),
-            canonical_root=str(canonical_root),
+            installation_id=installation_id,
+            canonical_root=canonical_root,
+            backend_id=backend_id,
         )
-
-    # Generate new identity
-    storage_dir.mkdir(parents=True, exist_ok=True)
-    installation_id = secrets.token_hex(16)
-    canonical_root = str(storage_dir.resolve())
-    data = {
-        "version": 1,
-        "installation_id": installation_id,
-        "canonical_root": canonical_root,
-    }
-
-    tmp_file = storage_dir / f"installation.json.tmp.{os.getpid()}.{secrets.token_hex(4)}"
-    try:
-        content = json.dumps(data, indent=2) + "\n"
-        tmp_file.write_text(content, encoding="utf-8")
-        if os.name == "posix":
-            os.chmod(tmp_file, 0o600)
-        os.replace(tmp_file, install_file)
-    finally:
-        if tmp_file.exists():
-            with contextlib.suppress(OSError):
-                tmp_file.unlink()
-
-    return InstallationIdentity(
-        installation_id=installation_id,
-        canonical_root=canonical_root,
-    )
 
 
 def relocate_installation(storage_dir: Path | None = None) -> InstallationIdentity:
@@ -170,6 +189,7 @@ def relocate_installation(storage_dir: Path | None = None) -> InstallationIdenti
         "version": 1,
         "installation_id": identity.installation_id,
         "canonical_root": canonical_root,
+        "backend_id": identity.backend_id,
     }
 
     install_file = storage_dir / "installation.json"
@@ -188,11 +208,12 @@ def relocate_installation(storage_dir: Path | None = None) -> InstallationIdenti
     return InstallationIdentity(
         installation_id=identity.installation_id,
         canonical_root=canonical_root,
+        backend_id=identity.backend_id,
     )
 
 
 def check_installation_identity(storage_dir: Path | None = None) -> InstallationIdentity:
-    """Check installation identity and verify canonical root matches current root."""
+    """Check installation identity and verify canonical root and backend match."""
     if storage_dir is None:
         storage_dir = get_storage_dir()
 
@@ -203,6 +224,18 @@ def check_installation_identity(storage_dir: Path | None = None) -> Installation
             f"Installation directory mismatch: canonical root is '{identity.canonical_root}', "
             f"but current root is '{current_root}'. Run 'nlm auth storage relocate' if this was an intentional move."
         )
+
+    # Verify backend identifier if recorded and not running in test with custom factory
+    if (
+        identity.backend_id not in ("unknown", "in_memory", "test_fake")
+        and get_backend_factory() is None
+    ):
+        current_backend = get_current_backend_id()
+        if identity.backend_id != current_backend:
+            raise BackendMismatchError(
+                f"Backend mismatch: installation was initialized with '{identity.backend_id}', "
+                f"but current backend is '{current_backend}'. Silent backend switching is prohibited."
+            )
     return identity
 
 
@@ -319,37 +352,94 @@ def get_backend_factory() -> Callable[[], CredentialBackend] | None:
     return _backend_factory
 
 
-def _detect_os_backend() -> CredentialBackend:
-    """Detect and return the platform-specific OS backend."""
+def _detect_os_backend() -> tuple[CredentialBackend, str]:
+    """Detect and return the platform-specific OS backend and its identifier."""
     # Fail closed during automated tests unless explicitly opted in
     if "PYTEST_CURRENT_TEST" in os.environ and not os.environ.get("ALLOW_REAL_KEYSTORE"):
         raise RealCredentialStoreAccessAttemptedError(
             "Direct OS backend detection attempted in test (_detect_os_backend)"
         )
 
-    import keyring
-
     if sys.platform == "darwin":
+        if "KEYCHAIN_PATH" in os.environ and not os.environ.get("ALLOW_REAL_KEYSTORE"):
+            raise BackendUnavailableError(
+                "Custom KEYCHAIN_PATH redirection is prohibited in production"
+            )
         from keyring.backends import macOS
 
         backend = macOS.Keyring()  # type: ignore[no-untyped-call]
+        backend_id = "macOS.Keyring"
     elif sys.platform == "win32":
+        # Note on Windows persistence: WinVaultKeyring stores secrets in the user's
+        # Windows Credential Manager via CredWriteW/CredReadW, which persists per user session.
         from keyring.backends import Windows
 
         backend = Windows.WinVaultKeyring()  # type: ignore[no-untyped-call]
+        backend_id = "Windows.WinVaultKeyring"
     else:
-        # Linux / SecretService
-        active = keyring.get_keyring()
-        backend = active
+        # Linux: Explicitly try supported SecretService, libsecret, KWallet
+        backend = None
+        backend_id = ""
+        try:
+            from keyring.backends import SecretService
 
-    return KeyringAdapterBackend(backend)
+            ss = SecretService.Keyring()
+            if getattr(ss, "priority", 0) > 0:
+                backend = ss
+                backend_id = "SecretService.Keyring"
+        except Exception:
+            pass
+
+        if backend is None:
+            try:
+                from keyring.backends import libsecret
+
+                ls = libsecret.Keyring()
+                if getattr(ls, "priority", 0) > 0:
+                    backend = ls
+                    backend_id = "libsecret.Keyring"
+            except Exception:
+                pass
+
+        if backend is None:
+            try:
+                from keyring.backends import KWallet
+
+                kw = KWallet.Keyring()
+                if getattr(kw, "priority", 0) > 0:
+                    backend = kw
+                    backend_id = "KWallet.Keyring"
+            except Exception:
+                pass
+
+        if backend is None:
+            raise BackendUnavailableError(
+                "No supported OS credential store found on Linux. SecretService, libsecret, or KWallet is required."
+            )
+
+    return KeyringAdapterBackend(backend), backend_id
 
 
 def get_backend() -> CredentialBackend:
     """Get the active credential backend."""
     if _backend_factory is not None:
         return _backend_factory()
-    return _detect_os_backend()
+    backend, _ = _detect_os_backend()
+    return backend
+
+
+def get_current_backend_id() -> str:
+    """Get the active backend identifier."""
+    if _backend_factory is not None:
+        active = _backend_factory()
+        if isinstance(active, InMemoryCredentialBackend):
+            return "in_memory"
+        return "test_fake"
+    try:
+        _, backend_id = _detect_os_backend()
+        return backend_id
+    except Exception:
+        return "unknown"
 
 
 class CredentialStore:
@@ -364,15 +454,26 @@ class CredentialStore:
         storage_dir: Path | None = None,
         backend: CredentialBackend | None = None,
         worker_client: CredentialWorkerClient | None = None,
+        helper_cmd: list[str] | None = None,
     ) -> None:
         self._storage_dir = storage_dir if storage_dir is not None else get_storage_dir()
         if worker_client is not None:
             self._worker = worker_client
-        else:
+        elif backend is not None:
             from notebooklm_tools.core.credential_backend_worker import CredentialWorkerClient
 
-            effective_backend = backend if backend is not None else get_backend()
-            self._worker = CredentialWorkerClient(backend=effective_backend)
+            self._worker = CredentialWorkerClient(backend=backend, use_subprocess=False)
+        elif get_backend_factory() is not None:
+            from notebooklm_tools.core.credential_backend_worker import CredentialWorkerClient
+
+            self._worker = CredentialWorkerClient(backend=get_backend(), use_subprocess=False)
+        else:
+            # PRODUCTION: Must run in helper subprocess!
+            from notebooklm_tools.core.credential_backend_worker import CredentialWorkerClient
+
+            self._worker = CredentialWorkerClient(
+                backend=None, use_subprocess=True, helper_cmd=helper_cmd
+            )
 
     def _validate_profile(self, profile_name: str) -> None:
         try:
@@ -393,9 +494,63 @@ class CredentialStore:
     def _get_profile_dir(self, profile_name: str) -> Path:
         return self._storage_dir / "profiles" / profile_name
 
+    def _get_operation_marker_path(self, profile_name: str) -> Path:
+        ops_dir = self._storage_dir / "operations"
+        ops_dir.mkdir(parents=True, exist_ok=True)
+        if os.name == "posix":
+            with contextlib.suppress(OSError):
+                os.chmod(ops_dir, 0o700)
+        return ops_dir / f"{profile_name}.json"
+
+    def _write_operation_marker(
+        self,
+        profile_name: str,
+        operation: str,
+        phase: str,
+        expected_revision: str | None = None,
+    ) -> None:
+        marker_file = self._get_operation_marker_path(profile_name)
+        data = {
+            "version": 1,
+            "op_id": secrets.token_hex(8),
+            "operation": operation,
+            "profile": profile_name,
+            "phase": phase,
+            "expected_revision": expected_revision,
+        }
+        tmp = marker_file.parent / f"{marker_file.name}.tmp.{os.getpid()}"
+        tmp.write_text(json.dumps(data) + "\n", encoding="utf-8")
+        if os.name == "posix":
+            os.chmod(tmp, 0o600)
+        os.replace(tmp, marker_file)
+
+    def _clear_operation_marker(self, profile_name: str) -> None:
+        marker_file = self._get_operation_marker_path(profile_name)
+        if marker_file.exists():
+            with contextlib.suppress(OSError):
+                marker_file.unlink()
+
+    def _read_operation_marker(self, profile_name: str) -> dict[str, Any] | None:
+        marker_file = self._get_operation_marker_path(profile_name)
+        if not marker_file.exists():
+            return None
+        try:
+            data = json.loads(marker_file.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+            return None
+        except Exception:
+            return None
+
     def read_credentials(self, profile_name: str) -> dict[str, Any] | None:
         """Read and decrypt credentials for a protected profile."""
         self._validate_profile(profile_name)
+
+        # Reads must NOT mutate installation identity; if installation.json doesn't exist, no credentials exist
+        install_file = self._storage_dir / "installation.json"
+        if not install_file.exists():
+            return None
+
         profile_dir = self._get_profile_dir(profile_name)
         enc_path = profile_dir / "credentials.enc"
 
@@ -408,7 +563,6 @@ class CredentialStore:
 
         try:
             with self._get_profile_lock(profile_name):
-                # Check size bound
                 file_size = enc_path.stat().st_size
                 if file_size > MAX_ENVELOPE_SIZE:
                     raise OversizedCiphertextError(
@@ -419,9 +573,7 @@ class CredentialStore:
                     raw_text = enc_path.read_text(encoding="utf-8")
                     envelope = json.loads(raw_text)
                 except (json.JSONDecodeError, OSError) as exc:
-                    raise CorruptCiphertextError(
-                        f"Envelope is corrupt or not valid JSON: {exc}"
-                    ) from exc
+                    raise CorruptCiphertextError("Envelope is corrupt or not valid JSON") from exc
 
                 if not isinstance(envelope, dict):
                     raise CorruptCiphertextError("Envelope must be a JSON object")
@@ -439,11 +591,19 @@ class CredentialStore:
                         "Missing required envelope fields (revision, nonce, ciphertext)"
                     )
 
-                identity = get_installation_identity(self._storage_dir)
+                identity = check_installation_identity(self._storage_dir)
                 account_id = f"{identity.installation_id}:{profile_name}"
 
                 key_b64 = self._worker.get_password(SERVICE_NAME, account_id)
                 if key_b64 is None:
+                    # Check if a deletion operation was in progress (distinguish deletion intent from corruption)
+                    op_marker = self._read_operation_marker(profile_name)
+                    if op_marker and op_marker.get("operation") == "delete":
+                        if enc_path.exists():
+                            with contextlib.suppress(OSError):
+                                enc_path.unlink()
+                        self._clear_operation_marker(profile_name)
+                        return None
                     raise MissingKeyError(
                         f"Encryption key for profile '{profile_name}' is missing from the OS keystore."
                     )
@@ -451,19 +611,17 @@ class CredentialStore:
                 try:
                     key_bytes = base64.b64decode(key_b64)
                 except Exception as exc:
-                    raise CorruptCiphertextError(f"Invalid base64 key in keystore: {exc}") from exc
+                    raise CorruptCiphertextError("Invalid base64 key in keystore") from exc
 
                 if len(key_bytes) != KEY_BYTES:
-                    raise CorruptCiphertextError(
-                        f"Key in keystore is not {KEY_BYTES} bytes (got {len(key_bytes)})"
-                    )
+                    raise CorruptCiphertextError("Invalid key length in keystore")
 
                 try:
                     nonce = base64.b64decode(nonce_b64)
                     ciphertext = base64.b64decode(ciphertext_b64)
                 except Exception as exc:
                     raise CorruptCiphertextError(
-                        f"Base64 decoding failed for nonce/ciphertext: {exc}"
+                        "Base64 decoding failed for envelope fields"
                     ) from exc
 
                 aad = f"{version}:{revision}:{identity.installation_id}:{profile_name}".encode()
@@ -472,15 +630,13 @@ class CredentialStore:
                     decrypted = aesgcm.decrypt(nonce, ciphertext, aad)
                 except Exception as exc:
                     raise CorruptCiphertextError(
-                        f"AEAD authentication or decryption failed: {exc}"
+                        "Ciphertext envelope failed authentication or decryption"
                     ) from exc
 
                 try:
                     payload = json.loads(decrypted.decode("utf-8"))
                 except Exception as exc:
-                    raise CorruptCiphertextError(
-                        f"Decrypted payload is not valid JSON: {exc}"
-                    ) from exc
+                    raise CorruptCiphertextError("Decrypted payload is not valid JSON") from exc
 
                 if not isinstance(payload, dict):
                     raise CorruptCiphertextError("Decrypted payload must be a JSON object")
@@ -507,6 +663,10 @@ class CredentialStore:
             with self._get_profile_lock(profile_name):
                 account_id = f"{identity.installation_id}:{profile_name}"
 
+                # Write operation marker: preparing
+                self._write_operation_marker(profile_name, operation="write", phase="preparing")
+
+                # Readback first to check if key already exists (reconciliation on retry/recovery)
                 key_b64 = self._worker.get_password(SERVICE_NAME, account_id)
                 if key_b64 is None:
                     # An existing ciphertext with a missing key must fail; never generate a new key over it!
@@ -533,17 +693,14 @@ class CredentialStore:
                             "Failed to verify key persistence in OS store upon write"
                         )
                 else:
+                    # Reuse existing key! Never generate a new key when key already exists
                     try:
                         raw_key = base64.b64decode(key_b64)
                     except Exception as exc:
-                        raise CorruptCiphertextError(
-                            f"Invalid base64 key in keystore: {exc}"
-                        ) from exc
+                        raise CorruptCiphertextError("Invalid base64 key in keystore") from exc
 
                     if len(raw_key) != KEY_BYTES:
-                        raise CorruptCiphertextError(
-                            f"Key in keystore is not {KEY_BYTES} bytes (got {len(raw_key)})"
-                        )
+                        raise CorruptCiphertextError("Key in keystore is not 32 bytes")
 
                 nonce = secrets.token_bytes(NONCE_BYTES)
                 revision = secrets.token_hex(16)
@@ -562,6 +719,11 @@ class CredentialStore:
                     "nonce": base64.b64encode(nonce).decode("ascii"),
                     "ciphertext": base64.b64encode(ciphertext).decode("ascii"),
                 }
+
+                # Update marker to committed before file replacement
+                self._write_operation_marker(
+                    profile_name, operation="write", phase="committed", expected_revision=revision
+                )
 
                 profile_dir.mkdir(parents=True, exist_ok=True)
                 tmp_file = profile_dir / f"credentials.enc.tmp.{os.getpid()}.{secrets.token_hex(4)}"
@@ -593,6 +755,9 @@ class CredentialStore:
                     if tmp_file.exists():
                         with contextlib.suppress(OSError):
                             tmp_file.unlink()
+
+                # Clear operation marker upon successful commit
+                self._clear_operation_marker(profile_name)
         except FileLockTimeout as exc:
             raise LockAcquisitionTimeoutError(
                 f"Timed out acquiring lock for profile '{profile_name}' after {LOCK_TIMEOUT_SECONDS}s"
@@ -612,11 +777,17 @@ class CredentialStore:
 
         try:
             with self._get_profile_lock(profile_name):
+                # Mark key deletion intent before calling delete, distinguishing intent from corruption
+                self._write_operation_marker(profile_name, operation="delete", phase="preparing")
+
                 account_id = f"{identity.installation_id}:{profile_name}"
                 self._worker.delete_password(SERVICE_NAME, account_id)
 
                 if enc_path.exists():
                     enc_path.unlink()
+
+                self._write_operation_marker(profile_name, operation="delete", phase="cleanup")
+                self._clear_operation_marker(profile_name)
         except FileLockTimeout as exc:
             raise LockAcquisitionTimeoutError(
                 f"Timed out acquiring lock for profile '{profile_name}' after {LOCK_TIMEOUT_SECONDS}s"

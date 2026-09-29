@@ -58,12 +58,15 @@ class CredentialWorkerClient:
         backend: CredentialBackend | None = None,
         use_subprocess: bool = False,
         timeout_seconds: float | None = None,
+        helper_cmd: list[str] | None = None,
     ) -> None:
         self._backend = backend
         self._use_subprocess = use_subprocess
         self._timeout_seconds = (
             timeout_seconds if timeout_seconds is not None else get_default_timeout()
         )
+        self._helper_cmd = helper_cmd
+        self._last_helper_proc: subprocess.Popen[str] | None = None
 
     def get_password(self, service: str, account: str) -> str | None:
         """Retrieve a secret with a bounded deadline."""
@@ -109,21 +112,24 @@ class CredentialWorkerClient:
                 return None
             raise ValueError(f"Unknown operation: {op}")
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(_run)
-            try:
-                return future.result(timeout=self._timeout_seconds)
-            except concurrent.futures.TimeoutError as exc:
-                msg = (
-                    f"OS credential store operation '{op}' timed out after {self._timeout_seconds}s. "
-                    "On macOS, approve the Keychain popup, or run 'nlm auth storage status --verify'."
-                    if is_desktop_session()
-                    else f"OS credential store operation '{op}' timed out after {self._timeout_seconds}s."
-                )
-                raise BackendTimeoutError(msg) from exc
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(_run)
+        try:
+            return future.result(timeout=self._timeout_seconds)
+        except concurrent.futures.TimeoutError as exc:
+            executor.shutdown(wait=False, cancel_futures=True)
+            msg = (
+                f"OS credential store operation '{op}' timed out after {self._timeout_seconds}s. "
+                "On macOS, approve the Keychain popup, or run 'nlm auth storage status --verify'."
+                if is_desktop_session()
+                else f"OS credential store operation '{op}' timed out after {self._timeout_seconds}s."
+            )
+            raise BackendTimeoutError(msg) from exc
+        finally:
+            executor.shutdown(wait=False)
 
     def _execute_in_helper(self, request: dict[str, Any]) -> Any:
-        cmd = [
+        cmd = self._helper_cmd or [
             sys.executable,
             "-m",
             "notebooklm_tools.core.credential_backend_worker",
@@ -139,6 +145,7 @@ class CredentialWorkerClient:
             text=True,
             env=env,
         )
+        self._last_helper_proc = proc
 
         input_data = json.dumps(request) + "\n"
         try:
@@ -161,31 +168,40 @@ class CredentialWorkerClient:
             )
             raise BackendTimeoutError(msg) from exc
 
-        if proc.returncode != 0:
-            err_line = stderr_data.strip() if stderr_data else "Unknown worker failure"
-            if "RealCredentialStoreAccessAttemptedError" in err_line:
-                raise RealCredentialStoreAccessAttemptedError(err_line)
-            if "KeystoreItemTooLargeError" in err_line:
-                raise KeystoreItemTooLargeError(err_line)
-            raise BackendUnavailableError(
-                f"Credential helper failed (code {proc.returncode}): {err_line}"
-            )
+        # Check stdout for structured response first
+        response = None
+        if stdout_data and stdout_data.strip():
+            try:
+                response = json.loads(stdout_data.strip())
+            except json.JSONDecodeError:
+                response = None
 
-        try:
-            response = json.loads(stdout_data.strip())
-        except json.JSONDecodeError as exc:
-            raise BackendUnavailableError(
-                f"Invalid response from credential helper: {stdout_data!r}"
-            ) from exc
-
-        if not response.get("ok"):
-            err = response.get("error", "Unknown error")
+        if response is not None and not response.get("ok"):
             err_type = response.get("error_type", "")
             if err_type == "RealCredentialStoreAccessAttemptedError":
-                raise RealCredentialStoreAccessAttemptedError(err)
+                raise RealCredentialStoreAccessAttemptedError(
+                    "Real credential store access attempted in test"
+                )
             if err_type == "KeystoreItemTooLargeError":
-                raise KeystoreItemTooLargeError(err)
-            raise BackendUnavailableError(f"Credential store error: {err}")
+                raise KeystoreItemTooLargeError("Keystore item exceeds maximum allowed length")
+            if err_type == "BackendUnavailableError":
+                raise BackendUnavailableError("OS credential store is unavailable or locked")
+            raise BackendUnavailableError("Credential store operation failed")
+
+        if proc.returncode != 0:
+            err_line = stderr_data.strip() if stderr_data else ""
+            if "RealCredentialStoreAccessAttemptedError" in err_line:
+                raise RealCredentialStoreAccessAttemptedError(
+                    "Real credential store access attempted in test"
+                )
+            if "KeystoreItemTooLargeError" in err_line:
+                raise KeystoreItemTooLargeError("Keystore item exceeds maximum allowed length")
+            raise BackendUnavailableError("Credential store helper process failed")
+
+        if response is None:
+            raise BackendUnavailableError(
+                "Invalid response received from credential helper process"
+            )
 
         return response.get("result")
 
@@ -217,47 +233,57 @@ def _run_worker_loop() -> int:
         sys.stdout.write(json.dumps({"ok": True, "result": result}) + "\n")
         sys.stdout.flush()
         return 0
-    except RealCredentialStoreAccessAttemptedError as exc:
+    except RealCredentialStoreAccessAttemptedError:
         sys.stdout.write(
             json.dumps(
                 {
                     "ok": False,
-                    "error": str(exc),
+                    "error": "Real credential store access attempted in test",
                     "error_type": "RealCredentialStoreAccessAttemptedError",
                 }
             )
             + "\n"
         )
         sys.stdout.flush()
-        sys.stderr.write(f"RealCredentialStoreAccessAttemptedError: {exc}\n")
         return 2
-    except KeystoreItemTooLargeError as exc:
+    except KeystoreItemTooLargeError:
         sys.stdout.write(
             json.dumps(
                 {
                     "ok": False,
-                    "error": str(exc),
+                    "error": "Keystore item exceeds maximum allowed length",
                     "error_type": "KeystoreItemTooLargeError",
                 }
             )
             + "\n"
         )
         sys.stdout.flush()
-        sys.stderr.write(f"KeystoreItemTooLargeError: {exc}\n")
         return 3
+    except BackendUnavailableError:
+        sys.stdout.write(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": "OS credential store is unavailable or locked",
+                    "error_type": "BackendUnavailableError",
+                }
+            )
+            + "\n"
+        )
+        sys.stdout.flush()
+        return 4
     except Exception as exc:
         sys.stdout.write(
             json.dumps(
                 {
                     "ok": False,
-                    "error": str(exc),
+                    "error": "Credential store operation failed",
                     "error_type": type(exc).__name__,
                 }
             )
             + "\n"
         )
         sys.stdout.flush()
-        sys.stderr.write(f"Error: {exc}\n")
         return 1
 
 
