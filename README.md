@@ -137,6 +137,7 @@ This MCP and CLI use **internal APIs** that:
 
 - Are undocumented and may change without notice
 - Require cookie extraction from your browser (I have a tool for that!)
+- May not be aligned with Google's Terms of Service
 
 Use at your own risk for personal/experimental purposes.
 
