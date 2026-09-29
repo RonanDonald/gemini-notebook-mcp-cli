@@ -1,6 +1,4 @@
 import os
-import shutil
-from pathlib import Path
 
 import pytest
 
@@ -15,27 +13,16 @@ def _isolate_storage(monkeypatch, tmp_path, request):
     write to the real auth cache and Chrome profile. Without this guard, tests
     that exercise them corrupt the developer's real login.
 
-    Opt-in E2E tests get a sandboxed copy of credentials in a disposable temp
-    storage directory so live tests can run against Google's API without any
-    risk of mutating, migrating, or deleting the operator's real files.
+    Explicitly enabled E2E tests use the real authenticated profile,
+    but NLM_AUTH_STORAGE is forced to 'file' to guarantee no migration,
+    deletion, or protected-mode code paths can ever run during E2E.
     """
     if os.environ.get("NOTEBOOKLM_E2E") and request.node.get_closest_marker("e2e"):
-        real_storage = Path.home() / ".notebooklm-mcp-cli"
-        e2e_storage = tmp_path / "e2e_storage"
-        if real_storage.exists():
-            shutil.copytree(
-                real_storage,
-                e2e_storage,
-                ignore=shutil.ignore_patterns("*.sock", "*.lock"),
-            )
-        else:
-            e2e_storage.mkdir(parents=True, exist_ok=True)
-        monkeypatch.setenv("NOTEBOOKLM_MCP_CLI_PATH", str(e2e_storage))
+        monkeypatch.setenv("NLM_AUTH_STORAGE", "file")
         return
 
-    test_storage = tmp_path / "storage"
-    test_storage.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("NOTEBOOKLM_MCP_CLI_PATH", str(test_storage))
+    monkeypatch.setenv("NOTEBOOKLM_MCP_CLI_PATH", str(tmp_path / "storage"))
+    monkeypatch.setenv("NLM_AUTH_STORAGE", "file")
 
 
 @pytest.fixture(autouse=True)
@@ -51,7 +38,7 @@ def _disable_cookie_rotation(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _guard_credential_store(request):
+def _guard_credential_store(request, monkeypatch):
     """Enforce fail-closed credential store access during tests.
 
     Normal tests must NEVER open the real OS keystore (macOS Keychain,
@@ -64,18 +51,26 @@ def _guard_credential_store(request):
 
     import keyring
 
+    import notebooklm_tools.core.credential_store as cs
     from notebooklm_tools.core.credential_store import (
         FailClosedCredentialBackend,
         FailClosedKeyring,
+        RealCredentialStoreAccessAttemptedError,
         get_backend_factory,
         set_backend_factory,
     )
+
+    def _fail_detect():
+        raise RealCredentialStoreAccessAttemptedError(
+            "Direct OS backend detection attempted in test (_detect_os_backend)"
+        )
 
     old_keyring = keyring.get_keyring()
     old_factory = get_backend_factory()
 
     keyring.set_keyring(FailClosedKeyring())
     set_backend_factory(lambda: FailClosedCredentialBackend())
+    monkeypatch.setattr(cs, "_detect_os_backend", _fail_detect)
 
     try:
         yield

@@ -6,6 +6,7 @@ Provides isolated in-process backends and fail-closed guards for tests.
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Callable
 from typing import Protocol
@@ -163,6 +164,12 @@ def get_backend_factory() -> Callable[[], CredentialBackend] | None:
 
 def _detect_os_backend() -> CredentialBackend:
     """Detect and return the platform-specific OS backend."""
+    # Fail closed during automated tests unless explicitly opted in
+    if "PYTEST_CURRENT_TEST" in os.environ and not os.environ.get("ALLOW_REAL_KEYSTORE"):
+        raise RealCredentialStoreAccessAttemptedError(
+            "Direct OS backend detection attempted in test (_detect_os_backend)"
+        )
+
     import keyring
 
     if sys.platform == "darwin":
