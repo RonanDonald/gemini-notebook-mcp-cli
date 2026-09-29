@@ -49,7 +49,9 @@ def test_auth_storage_set_file_cli():
     assert "file" in res.output
 
     # Verify default profile was not flipped
-    res_default = runner.invoke(app, ["auth", "storage", "status", "--profile", "default", "--json"])
+    res_default = runner.invoke(
+        app, ["auth", "storage", "status", "--profile", "default", "--json"]
+    )
     assert res_default.exit_code == 0
     assert json.loads(res_default.output)["profile"] == "default"
 
@@ -82,18 +84,22 @@ def test_corrupt_config_cli_error_message_and_json():
     config_file.write_text("[output\ninvalid_toml")
     reset_config()
 
-    # Text mode error
-    res_text = runner.invoke(app, ["auth", "storage", "status"])
-    assert res_text.exit_code != 0
-    assert "Corrupt configuration file" in res_text.output
-    assert "Traceback" not in res_text.output
-    assert "nlm config reset" in res_text.output
+    try:
+        # Text mode error
+        res_text = runner.invoke(app, ["auth", "storage", "status"])
+        assert res_text.exit_code != 0
+        assert "Corrupt configuration file" in res_text.output
+        assert "Traceback" not in res_text.output
+        assert "nlm config reset" in res_text.output
 
-    # JSON mode error
-    reset_config()
-    res_json = runner.invoke(app, ["auth", "storage", "status", "--json"])
-    assert res_json.exit_code != 0
-    assert "Traceback" not in res_json.output
-    data = json.loads(res_json.output)
-    assert "error" in data
-    assert "Corrupt configuration file" in data["error"]
+        # JSON mode error
+        reset_config()
+        res_json = runner.invoke(app, ["auth", "storage", "status", "--json"])
+        assert res_json.exit_code != 0
+        assert "Traceback" not in res_json.output
+        data = json.loads(res_json.output)
+        assert "error" in data
+        assert "Corrupt configuration file" in data["error"]
+    finally:
+        config_file.unlink(missing_ok=True)
+        reset_config()

@@ -502,9 +502,28 @@ class Config(BaseModel):
 
 
 _RESERVED_DEVICE_NAMES = {
-    "con", "prn", "aux", "nul",
-    "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
-    "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    "com1",
+    "com2",
+    "com3",
+    "com4",
+    "com5",
+    "com6",
+    "com7",
+    "com8",
+    "com9",
+    "lpt1",
+    "lpt2",
+    "lpt3",
+    "lpt4",
+    "lpt5",
+    "lpt6",
+    "lpt7",
+    "lpt8",
+    "lpt9",
 }
 
 
@@ -521,12 +540,23 @@ def validate_profile_name(profile_name: str) -> None:
 
     stripped = profile_name.strip()
     if stripped != profile_name:
-        raise ValueError(f"Profile name cannot have leading or trailing whitespace: '{profile_name}'")
+        raise ValueError(
+            f"Profile name cannot have leading or trailing whitespace: '{profile_name}'"
+        )
 
     if "/" in profile_name or "\\" in profile_name or profile_name in (".", ".."):
-        raise ValueError(f"Profile name cannot contain path traversal or separators: '{profile_name}'")
-    if "/." in profile_name or "../" in profile_name or "..\\" in profile_name or ".\\" in profile_name:
-        raise ValueError(f"Profile name cannot contain path traversal or separators: '{profile_name}'")
+        raise ValueError(
+            f"Profile name cannot contain path traversal or separators: '{profile_name}'"
+        )
+    if (
+        "/." in profile_name
+        or "../" in profile_name
+        or "..\\" in profile_name
+        or ".\\" in profile_name
+    ):
+        raise ValueError(
+            f"Profile name cannot contain path traversal or separators: '{profile_name}'"
+        )
 
     base = profile_name.split(".")[0].lower()
     if base in _RESERVED_DEVICE_NAMES or profile_name.lower() in _RESERVED_DEVICE_NAMES:
@@ -585,9 +615,7 @@ def get_auth_storage_mode(profile_name: str = "default") -> str:
             raise ValueError(f"Invalid mode in marker: {mode}")
         return str(mode)
     except Exception as e:
-        raise ValueError(
-            f"Corrupt storage-mode.json in profile '{profile_name}': {e}"
-        ) from e
+        raise ValueError(f"Corrupt storage-mode.json in profile '{profile_name}': {e}") from e
 
 
 def set_auth_storage_mode(profile_name: str, mode: str) -> None:
@@ -659,7 +687,7 @@ def save_config(config: Config) -> None:
     config_file = get_config_file()
     safe_mkdir(config_file.parent, parents=True)
 
-    doc = tomlkit.document()
+    doc: Any = tomlkit.document()
     if config_file.exists():
         try:
             doc = tomlkit.parse(config_file.read_text(encoding="utf-8"))

@@ -7,12 +7,10 @@ import pytest
 
 from notebooklm_tools.core.auth import AuthManager
 from notebooklm_tools.utils.config import (
-    ConfigError,
     get_auth_storage_mode,
     get_config,
     get_config_file,
     get_profile_dir,
-    load_config,
     reset_config,
     save_config,
     set_auth_storage_mode,
@@ -130,18 +128,24 @@ def test_marker_file_permissions():
 
 def test_corrupt_config_toml_fails_closed():
     """Corrupt config.toml fails closed with a clean ConfigError."""
-    config_file = get_config_file()
+    import notebooklm_tools.utils.config as cfg
+
+    config_file = cfg.get_config_file()
     config_file.parent.mkdir(parents=True, exist_ok=True)
     config_file.write_text("[output\nformat = table (broken toml")
 
-    reset_config()
-    with pytest.raises(ConfigError) as exc_info:
-        load_config()
+    try:
+        cfg.reset_config()
+        with pytest.raises(cfg.ConfigError) as exc_info:
+            cfg.load_config()
 
-    err = str(exc_info.value)
-    assert "Corrupt configuration file" in err
-    assert str(config_file) in err
-    assert "nlm config reset" in err
+        err = str(exc_info.value)
+        assert "Corrupt configuration file" in err
+        assert str(config_file) in err
+        assert "nlm config reset" in err
+    finally:
+        config_file.unlink(missing_ok=True)
+        cfg.reset_config()
 
 
 def test_save_config_preserves_unknown_tables_and_no_env_overlay_persistence(monkeypatch):

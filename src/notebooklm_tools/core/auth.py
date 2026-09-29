@@ -404,9 +404,7 @@ class AuthManager:
 
     def profile_exists(self) -> bool:
         """Check if the profile exists with saved credentials."""
-        from notebooklm_tools.utils.config import get_profiles_dir
-
-        profile_path = get_profiles_dir() / self.profile_name
+        profile_path = self.profile_dir
         return (
             (profile_path / "cookies.json").exists()
             or (profile_path / "auth.json").exists()

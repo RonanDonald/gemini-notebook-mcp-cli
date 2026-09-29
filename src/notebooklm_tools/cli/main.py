@@ -893,7 +893,9 @@ def storage_status(
             if status["has_ciphertext"]:
                 console.print("  [dim]Ciphertext envelope present (credentials.enc)[/dim]")
             if status["has_legacy"]:
-                console.print("  [dim]Legacy plaintext files present (auth.json/cookies.json)[/dim]")
+                console.print(
+                    "  [dim]Legacy plaintext files present (auth.json/cookies.json)[/dim]"
+                )
             console.print("")
     except (ServiceError, ValidationError) as e:
         msg = getattr(e, "user_message", str(e))
@@ -1070,7 +1072,7 @@ def main(
         console.print(ctx.get_help())
 
 
-def cli_main():
+def cli_main() -> None:
     """Main CLI entry point with error handling."""
     import sys
 
