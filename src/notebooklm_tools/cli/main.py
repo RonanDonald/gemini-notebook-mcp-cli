@@ -860,6 +860,96 @@ def auth_refresh(
     console.print(f"[green]✓[/green] Session refreshed for profile '{profile_name}'.")
 
 
+storage_app = typer.Typer(
+    help="Manage credential storage mode (file or protected)",
+    no_args_is_help=True,
+)
+auth_app.add_typer(storage_app, name="storage")
+
+
+@storage_app.command("status")
+def storage_status(
+    profile: str = typer.Option(
+        None,
+        "--profile",
+        "-p",
+        help="Profile to check (default: configured default profile)",
+    ),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON"),
+) -> None:
+    """Show current credential storage mode for a profile."""
+    from notebooklm_tools.cli.formatters import print_json
+    from notebooklm_tools.services.auth_storage import get_storage_status
+    from notebooklm_tools.services.errors import ServiceError, ValidationError
+    from notebooklm_tools.utils.config import ConfigError
+
+    try:
+        status = get_storage_status(profile_name=profile)
+        if json_output:
+            print_json(status)
+        else:
+            console.print(f"\n[bold]Profile:[/bold] {status['profile']}")
+            console.print(f"[bold]Storage mode:[/bold] [cyan]{status['mode']}[/cyan]")
+            if status["has_ciphertext"]:
+                console.print("  [dim]Ciphertext envelope present (credentials.enc)[/dim]")
+            if status["has_legacy"]:
+                console.print("  [dim]Legacy plaintext files present (auth.json/cookies.json)[/dim]")
+            console.print("")
+    except (ServiceError, ValidationError) as e:
+        msg = getattr(e, "user_message", str(e))
+        if json_output:
+            print_json({"error": msg})
+        else:
+            console.print(f"[red]Error:[/red] {msg}")
+        raise typer.Exit(1) from e
+    except ConfigError as e:
+        if json_output:
+            print_json({"error": str(e)})
+        else:
+            console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1) from e
+
+
+@storage_app.command("set")
+def storage_set(
+    mode: str = typer.Argument(..., help="Storage mode: 'file' or 'protected'"),
+    profile: str = typer.Option(
+        None,
+        "--profile",
+        "-p",
+        help="Profile to set (default: configured default profile)",
+    ),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON"),
+) -> None:
+    """Set credential storage mode for a profile."""
+    from notebooklm_tools.cli.formatters import print_json
+    from notebooklm_tools.services.auth_storage import set_storage_mode
+    from notebooklm_tools.services.errors import ServiceError, ValidationError
+    from notebooklm_tools.utils.config import ConfigError
+
+    try:
+        res = set_storage_mode(mode=mode, profile_name=profile)
+        if json_output:
+            print_json(res)
+        else:
+            console.print(
+                f"[green]✓[/green] Storage mode set to '[cyan]{res['mode']}[/cyan]' for profile '{res['profile']}'."
+            )
+    except (ServiceError, ValidationError) as e:
+        msg = getattr(e, "user_message", str(e))
+        if json_output:
+            print_json({"error": msg})
+        else:
+            console.print(f"[red]Error:[/red] {msg}")
+        raise typer.Exit(1) from e
+    except ConfigError as e:
+        if json_output:
+            print_json({"error": str(e)})
+        else:
+            console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1) from e
+
+
 # Register profile commands under login
 login_app.add_typer(profile_app, name="profile")
 
@@ -997,6 +1087,7 @@ def cli_main():
             AuthenticationError,
             NLMError,
         )
+        from notebooklm_tools.utils.config import ConfigError
 
         # Handle authentication errors cleanly
         if isinstance(e, (AuthenticationError, ClientAuthenticationError)):
@@ -1010,6 +1101,16 @@ def cli_main():
             console.print(f"\n[red]✗ Error:[/red] {e.message}")
             if e.hint:
                 console.print(f"[dim]{e.hint}[/dim]\n")
+            sys.exit(1)
+
+        # Handle corrupt config cleanly without traceback
+        elif isinstance(e, ConfigError):
+            if "--json" in sys.argv or "-j" in sys.argv:
+                import json
+
+                print(json.dumps({"error": str(e)}))
+            else:
+                console.print(f"\n[red]✗ Error:[/red] {str(e)}\n")
             sys.exit(1)
 
         # For unexpected errors, show the traceback

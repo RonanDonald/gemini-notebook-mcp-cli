@@ -134,5 +134,7 @@ def test_subprocess_direct_keyring_access_fails_closed():
 
 
 def test_e2e_isolation_forces_file_mode():
-    """Test environment must force NLM_AUTH_STORAGE=file to guarantee no migration/deletion."""
-    assert os.environ.get("NLM_AUTH_STORAGE") == "file"
+    """E2E runs and defaults must resolve to file mode to guarantee no migration/deletion."""
+    from notebooklm_tools.utils.config import get_auth_storage_mode
+
+    assert get_auth_storage_mode("default") == "file"

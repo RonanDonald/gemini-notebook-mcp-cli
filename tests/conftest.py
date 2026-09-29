@@ -22,7 +22,6 @@ def _isolate_storage(monkeypatch, tmp_path, request):
         return
 
     monkeypatch.setenv("NOTEBOOKLM_MCP_CLI_PATH", str(tmp_path / "storage"))
-    monkeypatch.setenv("NLM_AUTH_STORAGE", "file")
 
 
 @pytest.fixture(autouse=True)

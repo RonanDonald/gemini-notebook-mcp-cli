@@ -466,6 +466,10 @@ def auto_migrate_if_needed() -> list[str]:
 # =============================================================================
 
 
+class ConfigError(Exception):
+    """Raised when configuration file is corrupt or invalid."""
+
+
 class OutputConfig(BaseModel):
     """Output formatting configuration."""
 
@@ -497,6 +501,119 @@ class Config(BaseModel):
     auth: AuthConfig = Field(default_factory=AuthConfig)
 
 
+_RESERVED_DEVICE_NAMES = {
+    "con", "prn", "aux", "nul",
+    "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+    "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+}
+
+
+def validate_profile_name(profile_name: str) -> None:
+    """Validate profile name for filesystem and keystore safety.
+
+    Rejects empty names, traversal, path separators, reserved device names,
+    and case-insensitive collisions with existing profiles.
+    """
+    import re
+
+    if not profile_name or not isinstance(profile_name, str):
+        raise ValueError("Profile name cannot be empty")
+
+    stripped = profile_name.strip()
+    if stripped != profile_name:
+        raise ValueError(f"Profile name cannot have leading or trailing whitespace: '{profile_name}'")
+
+    if "/" in profile_name or "\\" in profile_name or profile_name in (".", ".."):
+        raise ValueError(f"Profile name cannot contain path traversal or separators: '{profile_name}'")
+    if "/." in profile_name or "../" in profile_name or "..\\" in profile_name or ".\\" in profile_name:
+        raise ValueError(f"Profile name cannot contain path traversal or separators: '{profile_name}'")
+
+    base = profile_name.split(".")[0].lower()
+    if base in _RESERVED_DEVICE_NAMES or profile_name.lower() in _RESERVED_DEVICE_NAMES:
+        raise ValueError(f"Profile name '{profile_name}' is a reserved name")
+
+    if not re.match(r"^[a-zA-Z0-9_\-\.]+$", profile_name):
+        raise ValueError(f"Profile name '{profile_name}' contains invalid characters")
+
+    # Case-insensitive collision detection against existing profiles
+    profiles_dir = get_storage_dir() / "profiles"
+    if profiles_dir.exists():
+        for existing in profiles_dir.iterdir():
+            if (
+                existing.is_dir()
+                and existing.name.lower() == profile_name.lower()
+                and existing.name != profile_name
+            ):
+                raise ValueError(
+                    f"Case-insensitive collision with existing profile '{existing.name}' for '{profile_name}'"
+                )
+
+
+def get_auth_storage_mode(profile_name: str = "default") -> str:
+    """Get effective storage mode ('protected' or 'file') for a profile.
+
+    Resolution order:
+      1. NLM_AUTH_STORAGE environment variable (process override, invalid fails closed).
+      2. Profile's storage-mode.json marker file (missing means file, corrupt fails closed).
+      3. Default 'file'.
+    """
+    validate_profile_name(profile_name)
+
+    # 1. Environment override
+    if env_mode := os.environ.get("NLM_AUTH_STORAGE"):
+        mode = env_mode.strip().lower()
+        if mode not in ("protected", "file"):
+            raise ValueError(
+                f"Invalid NLM_AUTH_STORAGE: '{env_mode}'. Must be 'protected' or 'file'"
+            )
+        return mode
+
+    # 2. Profile marker
+    profile_dir = (get_storage_dir() / "profiles") / profile_name
+    marker_path = profile_dir / "storage-mode.json"
+    if not marker_path.exists():
+        return "file"
+
+    try:
+        data = json.loads(marker_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Marker is not a JSON object")
+        if data.get("version") != 1:
+            raise ValueError(f"Unsupported storage-mode version: {data.get('version')}")
+        mode = data.get("mode")
+        if mode not in ("protected", "file"):
+            raise ValueError(f"Invalid mode in marker: {mode}")
+        return str(mode)
+    except Exception as e:
+        raise ValueError(
+            f"Corrupt storage-mode.json in profile '{profile_name}': {e}"
+        ) from e
+
+
+def set_auth_storage_mode(profile_name: str, mode: str) -> None:
+    """Persist storage mode for a profile in a 0600 storage-mode.json marker."""
+    import sys
+
+    validate_profile_name(profile_name)
+    mode_clean = mode.strip().lower()
+    if mode_clean not in ("protected", "file"):
+        raise ValueError(f"Invalid mode '{mode}'. Must be 'protected' or 'file'")
+
+    profile_dir = get_profile_dir(profile_name)
+    safe_mkdir(profile_dir, parents=True)
+    marker_path = profile_dir / "storage-mode.json"
+
+    content = json.dumps({"version": 1, "mode": mode_clean}, indent=2) + "\n"
+    temp_path = profile_dir / f"storage-mode.json.tmp.{os.getpid()}"
+    with open(temp_path, "w", encoding="utf-8") as f:
+        f.write(content)
+        f.flush()
+        os.fsync(f.fileno())
+    if sys.platform != "win32":
+        os.chmod(temp_path, 0o600)
+    os.replace(temp_path, marker_path)
+
+
 def load_config() -> Config:
     """Load configuration from file and environment."""
     config_file = get_config_file()
@@ -509,8 +626,12 @@ def load_config() -> Config:
 
             with open(config_file, "rb") as f:
                 config_data = tomllib.load(f)
-        except Exception:
-            pass  # Use defaults on error
+        except Exception as e:
+            raise ConfigError(
+                f"Corrupt configuration file: {config_file}\n"
+                f"Error: {e}\n"
+                "To reset: delete the file or run 'nlm config reset'"
+            ) from e
 
     # Apply environment overrides
     if output_format := os.environ.get("NLM_OUTPUT_FORMAT"):
@@ -532,13 +653,42 @@ def load_config() -> Config:
 
 
 def save_config(config: Config) -> None:
-    """Save configuration to file."""
+    """Save configuration to file using tomlkit, preserving unknown tables and omitting env overlays."""
+    import tomlkit
+
     config_file = get_config_file()
     safe_mkdir(config_file.parent, parents=True)
 
-    # Convert to TOML format
-    toml_content = _config_to_toml(config)
-    config_file.write_text(toml_content, encoding="utf-8")
+    doc = tomlkit.document()
+    if config_file.exists():
+        try:
+            doc = tomlkit.parse(config_file.read_text(encoding="utf-8"))
+        except Exception:
+            doc = tomlkit.document()
+
+    # Update output table
+    if "output" not in doc:
+        doc["output"] = tomlkit.table()
+    doc["output"]["format"] = config.output.format
+    doc["output"]["color"] = config.output.color
+    doc["output"]["short_ids"] = config.output.short_ids
+
+    # Update auth table, avoiding persisting env overlays
+    if "auth" not in doc:
+        doc["auth"] = tomlkit.table()
+    if not os.environ.get("NLM_BROWSER"):
+        doc["auth"]["browser"] = config.auth.browser
+    if not os.environ.get("NLM_BROWSER_PATH"):
+        doc["auth"]["browser_path"] = config.auth.browser_path
+    if not os.environ.get("NLM_PROFILE"):
+        doc["auth"]["default_profile"] = config.auth.default_profile
+
+    temp_file = config_file.parent / f"config.toml.tmp.{os.getpid()}"
+    with open(temp_file, "w", encoding="utf-8") as f:
+        f.write(tomlkit.dumps(doc))
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(temp_file, config_file)
 
 
 def _config_to_toml(config: Config) -> str:
