@@ -7,12 +7,12 @@ Translates core storage contracts into service results and errors.
 from __future__ import annotations
 
 import contextlib
+import os
 from pathlib import Path
 from typing import Any, TypedDict
 
 from notebooklm_tools.services.errors import ServiceError, ValidationError
 from notebooklm_tools.utils.config import (
-    get_auth_storage_mode,
     get_config,
     get_profile_dir,
     get_storage_dir,
@@ -56,10 +56,9 @@ def get_storage_status(profile_name: str | None = None) -> StorageStatusResult:
     except ValueError as e:
         raise ValidationError(str(e)) from e
 
-    try:
-        mode = get_auth_storage_mode(resolved_profile)
-    except ValueError as e:
-        raise ServiceError(str(e)) from e
+    from notebooklm_tools.core.auth_migration import get_raw_on_disk_storage_mode
+
+    mode = get_raw_on_disk_storage_mode(resolved_profile)
 
     profile_dir = get_profile_dir(resolved_profile, create=False)
     has_marker = (profile_dir / "storage-mode.json").exists()
@@ -102,10 +101,16 @@ def get_storage_status(profile_name: str | None = None) -> StorageStatusResult:
     has_pending_op = marker is not None
     pending_op_details = None
     if marker:
-        pending_op_details = (
-            f"Operation '{marker.get('operation')}' in phase '{marker.get('phase')}' "
-            f"started at {marker.get('timestamp')}."
-        )
+        if marker.get("corrupt"):
+            pending_op_details = (
+                f"Corrupt or unreadable operation marker at '{marker.get('marker_path')}'. "
+                f"Run 'nlm auth storage resolve --clear-marker --profile {resolved_profile}' to clear it."
+            )
+        else:
+            pending_op_details = (
+                f"Operation '{marker.get('operation')}' in phase '{marker.get('phase')}' "
+                f"started at {marker.get('timestamp')}."
+            )
 
     return StorageStatusResult(
         profile=resolved_profile,
@@ -128,14 +133,100 @@ def set_storage_mode(mode: str, profile_name: str | None = None) -> StorageSetRe
     if mode_clean not in ("protected", "file"):
         raise ValidationError(f"Invalid storage mode '{mode}'. Must be 'protected' or 'file'")
 
-    from notebooklm_tools.core.auth_migration import read_operation_marker
+    from notebooklm_tools.core.auth_migration import (
+        canonical_secrets_equal,
+        capture_file_mode_snapshot,
+        capture_protected_snapshot,
+        read_operation_marker,
+    )
 
-    if read_operation_marker(resolved_profile):
+    current_status = get_storage_status(resolved_profile)
+    current_mode = current_status["mode"]
+
+    env_mode = os.environ.get("NLM_AUTH_STORAGE", "").strip().lower()
+    if env_mode and env_mode in ("file", "protected") and env_mode != current_mode:
+        raise ServiceError(
+            f"NLM_AUTH_STORAGE environment variable ('{env_mode}') disagrees with on-disk storage mode "
+            f"('{current_mode}') for profile '{resolved_profile}'. Unset NLM_AUTH_STORAGE before changing storage mode."
+        )
+
+    marker = read_operation_marker(resolved_profile)
+    if marker:
+        if marker.get("corrupt"):
+            raise ServiceError(
+                f"Cannot change storage mode: profile '{resolved_profile}' has a corrupt operation marker at '{marker.get('marker_path')}'. "
+                f"Run 'nlm auth storage resolve --clear-marker --profile {resolved_profile}' to clear it."
+            )
         raise ServiceError(
             f"Cannot change storage mode: profile '{resolved_profile}' has an unfinished operation in progress. "
             f"Run 'nlm auth storage resolve --profile {resolved_profile}' or inspect 'nlm auth storage status' first."
         )
 
+    if mode_clean == current_mode:
+        if mode_clean == "file":
+            if current_status["has_ciphertext"]:
+                snap_file = capture_file_mode_snapshot(resolved_profile)
+                snap_prot = capture_protected_snapshot(resolved_profile)
+                if snap_file and snap_prot and canonical_secrets_equal(snap_file, snap_prot):
+                    # Clean up identical residue
+                    enc_file = get_profile_dir(resolved_profile) / "credentials.enc"
+                    if enc_file.exists():
+                        enc_file.unlink()
+                    from notebooklm_tools.core.credential_store import CredentialStore
+
+                    store = CredentialStore()
+                    with contextlib.suppress(Exception):
+                        store.delete_credentials(resolved_profile)
+                    return StorageSetResult(
+                        profile=resolved_profile,
+                        mode="file",
+                        status="updated",
+                        message=f"Storage mode is already 'file' for profile '{resolved_profile}'. Cleaned up identical protected residue.",
+                    )
+                else:
+                    raise ServiceError(
+                        f"Conflict detected for profile '{resolved_profile}': active file-mode credentials differ from protected residue. "
+                        f"Run 'nlm auth storage resolve [file|protected] --profile {resolved_profile}' to choose which copy to keep, "
+                        f"or 'nlm auth storage resolve file --discard-inaccessible --profile {resolved_profile}' to discard inaccessible residue."
+                    )
+            return StorageSetResult(
+                profile=resolved_profile,
+                mode="file",
+                status="unchanged",
+                message=f"Profile '{resolved_profile}' is already in file mode.",
+            )
+        else:
+            # mode_clean == "protected"
+            if current_status["has_legacy"]:
+                snap_file = capture_file_mode_snapshot(resolved_profile)
+                snap_prot = capture_protected_snapshot(resolved_profile)
+                if snap_file and snap_prot and canonical_secrets_equal(snap_file, snap_prot):
+                    # Clean up identical plaintext residue
+                    cookies_file = get_profile_dir(resolved_profile) / "cookies.json"
+                    if cookies_file.exists():
+                        cookies_file.unlink()
+                    legacy_auth = get_profile_dir(resolved_profile) / "auth.json"
+                    if legacy_auth.exists():
+                        legacy_auth.unlink()
+                    return StorageSetResult(
+                        profile=resolved_profile,
+                        mode="protected",
+                        status="updated",
+                        message=f"Storage mode is already 'protected' for profile '{resolved_profile}'. Cleaned up identical plaintext residue.",
+                    )
+                else:
+                    raise ServiceError(
+                        f"Conflict detected for profile '{resolved_profile}': active protected credentials differ from plaintext residue. "
+                        f"Run 'nlm auth storage resolve [file|protected] --profile {resolved_profile}' to choose which copy to keep."
+                    )
+            return StorageSetResult(
+                profile=resolved_profile,
+                mode="protected",
+                status="unchanged",
+                message=f"Profile '{resolved_profile}' is already in protected mode.",
+            )
+
+    # When transitioning from file to protected:
     if mode_clean == "protected":
         try:
             validate_profile_name(resolved_profile, strict=True)
@@ -144,6 +235,16 @@ def set_storage_mode(mode: str, profile_name: str | None = None) -> StorageSetRe
                 f"Profile name '{resolved_profile}' contains characters unsupported by protected mode. "
                 f"Please rename it first with 'nlm login profile rename \"{resolved_profile}\" <new_name>'."
             ) from exc
+
+        # If ciphertext already exists when switching to protected, check for conflict
+        if current_status["has_ciphertext"] and current_status["has_legacy"]:
+            snap_file = capture_file_mode_snapshot(resolved_profile)
+            snap_prot = capture_protected_snapshot(resolved_profile)
+            if snap_file and snap_prot and not canonical_secrets_equal(snap_file, snap_prot):
+                raise ServiceError(
+                    f"Conflict detected for profile '{resolved_profile}': file-mode credentials differ from existing ciphertext. "
+                    f"Run 'nlm auth storage resolve [file|protected] --profile {resolved_profile}' to choose which copy to keep."
+                )
 
         from notebooklm_tools.core.auth_migration import migrate_profile_to_protected
         from notebooklm_tools.core.credential_store import (
@@ -174,7 +275,17 @@ def set_storage_mode(mode: str, profile_name: str | None = None) -> StorageSetRe
     except ValueError as e:
         raise ValidationError(str(e)) from e
 
-    # mode == "file"
+    # mode == "file" (switching from protected to file)
+    # If legacy files already exist when switching to file, check for conflict
+    if current_status["has_ciphertext"] and current_status["has_legacy"]:
+        snap_file = capture_file_mode_snapshot(resolved_profile)
+        snap_prot = capture_protected_snapshot(resolved_profile)
+        if snap_file and snap_prot and not canonical_secrets_equal(snap_file, snap_prot):
+            raise ServiceError(
+                f"Conflict detected for profile '{resolved_profile}': protected credentials differ from existing plaintext. "
+                f"Run 'nlm auth storage resolve [file|protected] --profile {resolved_profile}' to choose which copy to keep."
+            )
+
     from notebooklm_tools.core.auth_migration import migrate_profile_to_file
     from notebooklm_tools.core.credential_store import (
         BackendUnavailableError,
@@ -197,9 +308,58 @@ def set_storage_mode(mode: str, profile_name: str | None = None) -> StorageSetRe
 
 
 def resolve_storage_conflict(
-    profile_name: str, choice: str, discard_inaccessible: bool = False
+    profile_name: str,
+    choice: str | None = None,
+    discard_inaccessible: bool = False,
+    clear_marker: bool = False,
 ) -> StorageSetResult:
     """Resolve a conflict where both plaintext and protected credentials exist."""
+    from notebooklm_tools.core.auth_migration import (
+        _get_operations_dir,
+        clear_operation_marker,
+        get_raw_on_disk_storage_mode,
+        read_operation_marker,
+    )
+    from notebooklm_tools.core.credential_backend_worker import BackendTimeoutError
+    from notebooklm_tools.core.credential_store import (
+        BackendUnavailableError,
+        CredentialStore,
+        CredentialStoreError,
+        get_profile_lock,
+    )
+
+    validate_profile_name(profile_name, strict=False)
+
+    if clear_marker:
+        with get_profile_lock(profile_name):
+            marker = read_operation_marker(profile_name)
+            if not marker:
+                raise ServiceError(f"No operation marker found for profile '{profile_name}'.")
+
+            # Refuse if quarantine folder for this profile exists and contains files
+            quarantine_root = _get_operations_dir() / "quarantine"
+            if quarantine_root.exists():
+                for q_cand in quarantine_root.iterdir():
+                    if q_cand.is_dir() and q_cand.name.startswith(f"{profile_name}_"):
+                        files = sorted(f.name for f in q_cand.iterdir() if f.is_file())
+                        if files:
+                            raise ServiceError(
+                                f"Cannot clear marker: quarantine folder '{q_cand}' contains credentials files "
+                                f"({', '.join(files)}). Clearing the marker could delete or abandon the only "
+                                "plaintext copy. Inspect or restore them first."
+                            )
+
+            clear_operation_marker(profile_name)
+            return StorageSetResult(
+                profile=profile_name,
+                mode=get_raw_on_disk_storage_mode(profile_name),
+                status="resolved",
+                message=f"Operation marker cleared for profile '{profile_name}'.",
+            )
+
+    if not choice:
+        raise ValidationError("Resolution choice ('file' or 'protected') must be specified")
+
     choice_clean = choice.strip().lower()
     if choice_clean not in ("file", "protected"):
         raise ValidationError(
@@ -207,98 +367,143 @@ def resolve_storage_conflict(
         )
 
     validate_profile_name(profile_name, strict=(choice_clean == "protected"))
-    profile_dir = get_profile_dir(profile_name, create=False)
-    enc_path = profile_dir / "credentials.enc"
-    cookies_path = profile_dir / "cookies.json"
-    legacy_auth = profile_dir / "auth.json"
 
-    from notebooklm_tools.core.credential_store import CredentialStore
-
-    store = CredentialStore()
-
-    if choice_clean == "protected":
-        if not enc_path.exists():
-            raise ServiceError(
-                f"Cannot resolve to 'protected': no ciphertext exists for profile '{profile_name}'."
-            )
-        payload = store.read_credentials(profile_name)
-        if not payload:
-            raise ServiceError(
-                f"Cannot resolve to 'protected': ciphertext for profile '{profile_name}' cannot be decrypted."
-            )
-        if cookies_path.exists():
-            with contextlib.suppress(OSError):
-                cookies_path.unlink()
-        if legacy_auth.exists():
-            with contextlib.suppress(OSError):
-                legacy_auth.unlink()
-        configured_default = get_config().auth.default_profile
-        if profile_name == configured_default:
-            root_auth = get_storage_dir() / "auth.json"
-            if root_auth.exists() and not root_auth.is_symlink():
-                with contextlib.suppress(OSError):
-                    root_auth.unlink()
-
-        set_auth_storage_mode(profile_name, "protected")
-        return StorageSetResult(
-            profile=profile_name,
-            mode="protected",
-            status="resolved",
-            message=f"Conflict resolved: profile '{profile_name}' is now in protected mode (plain files removed).",
+    env_mode = os.environ.get("NLM_AUTH_STORAGE", "").strip().lower()
+    disk_mode = get_raw_on_disk_storage_mode(profile_name)
+    if env_mode and env_mode in ("file", "protected") and env_mode != disk_mode:
+        raise ServiceError(
+            f"NLM_AUTH_STORAGE environment variable ('{env_mode}') disagrees with on-disk storage mode "
+            f"('{disk_mode}') for profile '{profile_name}'. Unset NLM_AUTH_STORAGE before resolving conflict."
         )
-    else:
-        # choice == "file"
-        if discard_inaccessible:
-            if enc_path.exists():
-                with contextlib.suppress(OSError):
-                    enc_path.unlink()
-            with contextlib.suppress(Exception):
-                store.delete_credentials(profile_name)
-            set_auth_storage_mode(profile_name, "file")
-            return StorageSetResult(
-                profile=profile_name,
-                mode="file",
-                status="resolved",
-                message=(
-                    f"Inaccessible credentials discarded. Storage mode set to 'file' for profile '{profile_name}'. "
-                    "Run 'nlm login' to re-authenticate."
-                ),
+
+    with get_profile_lock(profile_name):
+        marker = read_operation_marker(profile_name)
+        if marker:
+            if marker.get("corrupt"):
+                raise ServiceError(
+                    f"Profile '{profile_name}' has a corrupt operation marker at '{marker.get('marker_path')}'. "
+                    f"Run 'nlm auth storage resolve --clear-marker --profile {profile_name}' to clear it."
+                )
+            raise ServiceError(
+                f"Cannot resolve storage conflict: profile '{profile_name}' has an unfinished operation in progress. "
+                "Inspect 'nlm auth storage status' first."
             )
 
-        if cookies_path.exists():
-            if enc_path.exists():
+        profile_dir = get_profile_dir(profile_name, create=False)
+        enc_path = profile_dir / "credentials.enc"
+        cookies_path = profile_dir / "cookies.json"
+        legacy_auth = profile_dir / "auth.json"
+
+        store = CredentialStore()
+
+        if choice_clean == "protected":
+            if not enc_path.exists():
+                raise ServiceError(
+                    f"Cannot resolve to 'protected': no ciphertext exists for profile '{profile_name}'."
+                )
+            payload = store.read_credentials(profile_name)
+            if not payload:
+                raise ServiceError(
+                    f"Cannot resolve to 'protected': ciphertext for profile '{profile_name}' cannot be decrypted."
+                )
+            if cookies_path.exists():
                 with contextlib.suppress(OSError):
-                    enc_path.unlink()
-            with contextlib.suppress(Exception):
-                store.delete_credentials(profile_name)
-            set_auth_storage_mode(profile_name, "file")
+                    cookies_path.unlink()
+            if legacy_auth.exists():
+                with contextlib.suppress(OSError):
+                    legacy_auth.unlink()
+            configured_default = get_config().auth.default_profile
+            if profile_name == configured_default:
+                root_auth = get_storage_dir() / "auth.json"
+                if root_auth.exists() and not root_auth.is_symlink():
+                    with contextlib.suppress(OSError):
+                        root_auth.unlink()
+
+            set_auth_storage_mode(profile_name, "protected")
             return StorageSetResult(
                 profile=profile_name,
-                mode="file",
+                mode="protected",
                 status="resolved",
-                message=f"Conflict resolved: profile '{profile_name}' is now in file mode (ciphertext removed).",
+                message=f"Conflict resolved: profile '{profile_name}' is now in protected mode (plain files removed).",
             )
         else:
-            from notebooklm_tools.core.auth_migration import migrate_profile_to_file
-            from notebooklm_tools.core.credential_store import (
-                BackendUnavailableError,
-                CredentialStoreError,
-            )
+            # choice == "file"
+            if discard_inaccessible:
+                # Preflight check on ciphertext readability
+                if enc_path.exists():
+                    try:
+                        payload = store.read_credentials(profile_name)
+                        if payload and payload.get("cookies"):
+                            raise ServiceError(
+                                f"Cannot discard credentials: protected credentials for profile '{profile_name}' are healthy and readable. "
+                                f"To export them to file mode without losing credentials, run 'nlm auth storage set file --profile {profile_name}' "
+                                f"or 'nlm auth storage resolve file --profile {profile_name}' without --discard-inaccessible."
+                            )
+                    except ServiceError:
+                        raise
+                    except (BackendUnavailableError, BackendTimeoutError) as exc:
+                        raise ServiceError(
+                            f"Cannot discard credentials for profile '{profile_name}': OS credential backend is locked, unavailable, or timed out ({exc}). "
+                            "Unlock your keystore or run this command from your desktop session."
+                        ) from exc
+                    except Exception as exc:
+                        err_str = str(exc).lower()
+                        if (
+                            "locked" in err_str
+                            or "unavailable" in err_str
+                            or "timed out" in err_str
+                        ):
+                            raise ServiceError(
+                                f"Cannot discard credentials for profile '{profile_name}': OS credential backend is locked, unavailable, or timed out ({exc}). "
+                                "Unlock your keystore or run this command from your desktop session."
+                            ) from exc
 
-            try:
-                migrate_profile_to_file(profile_name)
+                if enc_path.exists():
+                    with contextlib.suppress(OSError):
+                        enc_path.unlink()
+                with contextlib.suppress(Exception):
+                    store.delete_credentials(profile_name)
+                set_auth_storage_mode(profile_name, "file")
                 return StorageSetResult(
                     profile=profile_name,
                     mode="file",
                     status="resolved",
-                    message=f"Conflict resolved: profile '{profile_name}' is now in file mode (credentials exported).",
+                    message=(
+                        f"Inaccessible credentials discarded. Storage mode set to 'file' for profile '{profile_name}'. "
+                        "Run 'nlm login' to re-authenticate."
+                    ),
                 )
-            except (BackendUnavailableError, CredentialStoreError) as exc:
-                raise ServiceError(
-                    f"Cannot decrypt protected credentials to export to file mode: {exc}\n"
-                    f"To discard inaccessible ciphertext and return to file mode, run:\n"
-                    f"nlm auth storage resolve file --discard-inaccessible --profile {profile_name}"
-                ) from exc
+
+            if cookies_path.exists():
+                if enc_path.exists():
+                    with contextlib.suppress(OSError):
+                        enc_path.unlink()
+                with contextlib.suppress(Exception):
+                    store.delete_credentials(profile_name)
+                set_auth_storage_mode(profile_name, "file")
+                return StorageSetResult(
+                    profile=profile_name,
+                    mode="file",
+                    status="resolved",
+                    message=f"Conflict resolved: profile '{profile_name}' is now in file mode (ciphertext removed).",
+                )
+            else:
+                from notebooklm_tools.core.auth_migration import migrate_profile_to_file
+
+                try:
+                    migrate_profile_to_file(profile_name)
+                    return StorageSetResult(
+                        profile=profile_name,
+                        mode="file",
+                        status="resolved",
+                        message=f"Conflict resolved: profile '{profile_name}' is now in file mode (credentials exported).",
+                    )
+                except (BackendUnavailableError, CredentialStoreError) as exc:
+                    raise ServiceError(
+                        f"Cannot decrypt protected credentials to export to file mode: {exc}\n"
+                        f"To discard inaccessible ciphertext and return to file mode, run:\n"
+                        f"nlm auth storage resolve file --discard-inaccessible --profile {profile_name}"
+                    ) from exc
 
 
 def relocate_storage(storage_dir: Path | None = None) -> dict[str, Any]:
@@ -332,6 +537,7 @@ def rename_profile(old_name: str, new_name: str) -> RenameProfileResult:
     """
     import json
 
+    from notebooklm_tools.core.auth_migration import read_operation_marker
     from notebooklm_tools.services.errors import ConflictError, NotFoundError
     from notebooklm_tools.utils.config import get_profiles_dir, save_config
 
@@ -351,6 +557,19 @@ def rename_profile(old_name: str, new_name: str) -> RenameProfileResult:
 
     if not old_dir.exists():
         raise NotFoundError(f"Profile '{old_clean}' does not exist")
+
+    # Guard: check if an unfinished or corrupt operation marker exists
+    marker = read_operation_marker(old_clean)
+    if marker:
+        if marker.get("corrupt"):
+            raise ServiceError(
+                f"Cannot rename profile '{old_clean}': profile has a corrupt operation marker at '{marker.get('marker_path')}'. "
+                f"Run 'nlm auth storage resolve --clear-marker --profile {old_clean}' to clear it."
+            )
+        raise ServiceError(
+            f"Cannot rename profile '{old_clean}': an unfinished storage operation is in progress. "
+            f"Run 'nlm auth storage status --profile {old_clean}' first."
+        )
 
     # Protected profiles cannot be renamed yet
     if (old_dir / "credentials.enc").exists():
@@ -383,7 +602,7 @@ def rename_profile(old_name: str, new_name: str) -> RenameProfileResult:
         config.auth.default_profile = new_clean
         save_config(config)
 
-    msg = f"Profile '{old_clean}' renamed to '{new_clean}'"
+    msg = f"Renamed profile '{old_clean}' to '{new_clean}'"
     if is_default:
         msg += " and set as default profile"
 

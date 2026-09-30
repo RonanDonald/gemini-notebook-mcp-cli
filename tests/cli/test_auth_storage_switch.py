@@ -119,7 +119,23 @@ def test_cli_storage_resolve_discard_inaccessible(tmp_path):
     assert "Cannot decrypt protected credentials" in res_fail.output
     assert "--discard-inaccessible" in res_fail.output
 
-    # With discard-inaccessible, succeeds
+    # With discard-inaccessible but without confirmation, aborts
+    res_abort = runner.invoke(
+        app,
+        [
+            "auth",
+            "storage",
+            "resolve",
+            "file",
+            "--discard-inaccessible",
+            "--profile",
+            "corrupt_cli",
+        ],
+    )
+    assert res_abort.exit_code != 0
+    assert "Aborted" in res_abort.output
+
+    # With discard-inaccessible and --yes, succeeds
     res_ok = runner.invoke(
         app,
         [
@@ -128,6 +144,7 @@ def test_cli_storage_resolve_discard_inaccessible(tmp_path):
             "resolve",
             "file",
             "--discard-inaccessible",
+            "--yes",
             "--profile",
             "corrupt_cli",
         ],
@@ -159,3 +176,58 @@ def test_cli_doctor_reports_storage_mode_and_conflict(tmp_path):
     assert "Storage mode: protected" in res.output
     assert "Conflict: yes" in res.output
     assert "nlm auth storage resolve" in res.output
+
+
+def test_cli_storage_resolve_clear_marker(tmp_path):
+    """nlm auth storage resolve --clear-marker clears marker with --yes, refuses if quarantine non-empty."""
+    from notebooklm_tools.core.auth_migration import _get_operations_dir, write_operation_marker
+
+    write_operation_marker(
+        "marker_cli", {"operation": "migrate_to_protected", "phase": "preparing"}
+    )
+
+    # Aborts without confirmation
+    res_abort = runner.invoke(
+        app, ["auth", "storage", "resolve", "--clear-marker", "--profile", "marker_cli"]
+    )
+    assert res_abort.exit_code != 0
+    assert "Aborted" in res_abort.output
+
+    # Refuses if quarantine folder has files
+    q_dir = _get_operations_dir() / "quarantine" / "marker_cli_op1"
+    q_dir.mkdir(parents=True)
+    (q_dir / "cookies.json").write_text("{}", encoding="utf-8")
+
+    res_refuse = runner.invoke(
+        app,
+        [
+            "auth",
+            "storage",
+            "resolve",
+            "--clear-marker",
+            "--yes",
+            "--profile",
+            "marker_cli",
+        ],
+    )
+    assert res_refuse.exit_code != 0
+    assert "Cannot clear marker" in res_refuse.output
+    assert "cookies.json" in res_refuse.output
+
+    # Cleans up quarantine and succeeds
+    (q_dir / "cookies.json").unlink()
+    q_dir.rmdir()
+    res_ok = runner.invoke(
+        app,
+        [
+            "auth",
+            "storage",
+            "resolve",
+            "--clear-marker",
+            "--yes",
+            "--profile",
+            "marker_cli",
+        ],
+    )
+    assert res_ok.exit_code == 0
+    assert "Operation marker cleared" in res_ok.output

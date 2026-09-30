@@ -941,7 +941,9 @@ def storage_set(
 
 @storage_app.command("resolve")
 def storage_resolve(
-    choice: str = typer.Argument(..., help="Storage mode to resolve to: 'file' or 'protected'"),
+    choice: str | None = typer.Argument(
+        None, help="Storage mode to resolve to: 'file' or 'protected'"
+    ),
     profile: str = typer.Option(
         None,
         "--profile",
@@ -953,20 +955,65 @@ def storage_resolve(
         "--discard-inaccessible",
         help="Discard inaccessible ciphertext and reset to file mode without exporting",
     ),
+    clear_marker: bool = typer.Option(
+        False,
+        "--clear-marker",
+        help="Clear a stuck or corrupt operation marker",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Confirm action without interactive prompt",
+    ),
     json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON"),
 ) -> None:
-    """Resolve a credential storage conflict or discard inaccessible credentials."""
+    """Resolve a credential storage conflict, clear stuck markers, or discard inaccessible credentials."""
     from notebooklm_tools.cli.formatters import print_json
     from notebooklm_tools.services.auth_storage import resolve_storage_conflict
     from notebooklm_tools.services.errors import ServiceError, ValidationError
     from notebooklm_tools.utils.config import ConfigError, get_config
 
     resolved_profile = (profile or get_config().auth.default_profile).strip()
+
+    if clear_marker:
+        if json_output and not yes:
+            print_json({"error": "Clearing operation marker requires '--yes' when using '--json'."})
+            raise typer.Exit(1)
+        if not yes and not typer.confirm(
+            f"Clear operation marker for profile '{resolved_profile}'?", default=False
+        ):
+            console.print("[yellow]Aborted.[/yellow]")
+            raise typer.Exit(1)
+    elif discard_inaccessible:
+        if json_output and not yes:
+            print_json(
+                {
+                    "error": "Discarding inaccessible credentials requires '--yes' when using '--json'."
+                }
+            )
+            raise typer.Exit(1)
+        if not yes and not typer.confirm(
+            f"Discard inaccessible credentials for profile '{resolved_profile}' and reset to file mode? "
+            "Encrypted credentials will be permanently deleted.",
+            default=False,
+        ):
+            console.print("[yellow]Aborted.[/yellow]")
+            raise typer.Exit(1)
+    elif not choice:
+        msg = "Missing argument 'CHOICE': must specify 'file' or 'protected', or pass '--clear-marker'."
+        if json_output:
+            print_json({"error": msg})
+        else:
+            console.print(f"[red]Error:[/red] {msg}")
+        raise typer.Exit(1)
+
     try:
         res = resolve_storage_conflict(
             profile_name=resolved_profile,
             choice=choice,
             discard_inaccessible=discard_inaccessible,
+            clear_marker=clear_marker,
         )
         if json_output:
             print_json(res)

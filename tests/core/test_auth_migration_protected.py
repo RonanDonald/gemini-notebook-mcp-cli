@@ -19,25 +19,34 @@ Verifies:
 
 import json
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
 
-from notebooklm_tools.core.auth import AuthManager
+from notebooklm_tools.core.auth import AuthManager, AuthTokens, save_tokens_to_cache
 from notebooklm_tools.core.auth_migration import (
     StorageConflictError,
+    _get_operations_dir,
     canonical_secrets_equal,
+    compute_cookies_hash,
     migrate_profile_to_protected,
     read_operation_marker,
     reconcile_pending_operations,
     write_operation_marker,
 )
+from notebooklm_tools.core.credential_backend_worker import BackendTimeoutError
 from notebooklm_tools.core.credential_store import (
+    BackendUnavailableError,
     CredentialStore,
     CredentialStoreError,
+    LockAcquisitionTimeoutError,
+    get_profile_lock,
 )
+from notebooklm_tools.mcp.tools.server import server_info
 from notebooklm_tools.services.auth_storage import (
     get_storage_status,
+    rename_profile,
     resolve_storage_conflict,
     set_storage_mode,
 )
@@ -119,8 +128,6 @@ def test_configured_default_profile_work_root_mirror(tmp_path):
     cfg.auth.default_profile = "work"
     save_config(cfg)
 
-    from notebooklm_tools.core.auth import AuthTokens, save_tokens_to_cache
-
     # Setup profile 'work' (configured default)
     tokens_work = AuthTokens(
         cookies={"SID": "work_sid"},
@@ -148,7 +155,6 @@ def test_configured_default_profile_work_root_mirror(tmp_path):
 
 def test_root_auth_json_removed_when_protecting_configured_default(tmp_path):
     """Protecting configured default profile removes root auth.json and lists it in removed_files."""
-    from notebooklm_tools.core.auth import AuthTokens, save_tokens_to_cache
 
     cfg = get_config()
     cfg.auth.default_profile = "work"
@@ -224,8 +230,11 @@ def test_recovery_of_migrate_to_file_recognizes_published_target(tmp_path):
     prof_dir.mkdir(parents=True)
     cookies_path = prof_dir / "cookies.json"
     cookies_path.write_text(json.dumps({"SID": "published_sid"}), encoding="utf-8")
+
+    store = CredentialStore()
+    store.write_credentials("target_prof", {"cookies": {"SID": "published_sid"}})
     enc_path = prof_dir / "credentials.enc"
-    enc_path.write_text("dummy_enc", encoding="utf-8")
+    assert enc_path.exists()
 
     # Write marker simulating crash during committed
     marker_data = {
@@ -241,7 +250,40 @@ def test_recovery_of_migrate_to_file_recognizes_published_target(tmp_path):
     assert reconciled is True
     assert get_auth_storage_mode("target_prof") == "file"
     assert not enc_path.exists()
+    assert not store.has_key("target_prof")
     assert read_operation_marker("target_prof") is None
+
+
+def test_recovery_of_migrate_to_file_preserves_ciphertext_if_unverified(tmp_path):
+    """Recovery of migrate_to_file safely preserves ciphertext and rolls back mode if export cannot be verified."""
+    prof_dir = tmp_path / "profiles" / "target_prof2"
+    prof_dir.mkdir(parents=True)
+    cookies_path = prof_dir / "cookies.json"
+    cookies_path.write_text(json.dumps({"SID": "divergent_sid"}), encoding="utf-8")
+
+    store = CredentialStore()
+    store.write_credentials("target_prof2", {"cookies": {"SID": "protected_sid"}})
+    enc_path = prof_dir / "credentials.enc"
+    assert enc_path.exists()
+
+    marker_data = {
+        "version": 1,
+        "operation_id": "test_op2",
+        "operation": "migrate_to_file",
+        "profile": "target_prof2",
+        "phase": "committed",
+    }
+    write_operation_marker("target_prof2", marker_data)
+
+    reconciled = reconcile_pending_operations("target_prof2")
+    assert reconciled is True
+    # Safely rolled back to protected
+    assert get_auth_storage_mode("target_prof2") == "protected"
+    # Preserved ciphertext and key!
+    assert enc_path.exists()
+    assert store.has_key("target_prof2")
+    # Marker cleared
+    assert read_operation_marker("target_prof2") is None
 
 
 def test_file_mode_never_opens_keystore_in_load_profile(tmp_path, monkeypatch):
@@ -360,3 +402,398 @@ def test_resolve_storage_conflict_choices(tmp_path):
     assert discard_res["mode"] == "file"
     assert not enc_path.exists()
     assert get_auth_storage_mode("res_prof") == "file"
+
+
+def test_repro_a_set_file_with_ciphertext_residue(tmp_path):
+    """Repro A: set_storage_mode('file') cleans identical residue; refuses and flags conflict if divergent."""
+    auth = AuthManager("prof_repro_a")
+    auth.save_profile(cookies={"SID": "common_cookie"}, email="repro_a@example.com")
+    assert get_auth_storage_mode("prof_repro_a") == "file"
+    prof_dir = get_profile_dir("prof_repro_a")
+    enc_path = prof_dir / "credentials.enc"
+
+    # Case 1: Residue has identical cookies
+    store = CredentialStore()
+    store.write_credentials("prof_repro_a", {"cookies": {"SID": "common_cookie"}})
+    assert enc_path.exists()
+    assert store.has_key("prof_repro_a")
+
+    res = set_storage_mode("file", profile_name="prof_repro_a")
+    assert res["status"] == "updated"
+    assert not enc_path.exists()
+    assert not store.has_key("prof_repro_a")
+
+    # Case 2: Residue has divergent cookies
+    store.write_credentials("prof_repro_a", {"cookies": {"SID": "divergent_cookie"}})
+    assert enc_path.exists()
+    with pytest.raises(ServiceError, match="Conflict detected.*differ from protected residue"):
+        set_storage_mode("file", profile_name="prof_repro_a")
+    # Ciphertext and key must NOT be deleted!
+    assert enc_path.exists()
+    assert store.has_key("prof_repro_a")
+
+
+def test_repro_b_set_protected_with_plaintext_residue(tmp_path):
+    """Repro B: set_storage_mode('protected') cleans identical plaintext residue; refuses if divergent."""
+    auth = AuthManager("prof_repro_b")
+    auth.save_profile(cookies={"SID": "common_cookie"}, email="repro_b@example.com")
+    set_storage_mode("protected", profile_name="prof_repro_b")
+    assert get_auth_storage_mode("prof_repro_b") == "protected"
+    prof_dir = get_profile_dir("prof_repro_b")
+    cookies_path = prof_dir / "cookies.json"
+
+    # Case 1: Plaintext residue has identical cookies
+    cookies_path.write_text(json.dumps({"SID": "common_cookie"}), encoding="utf-8")
+    res = set_storage_mode("protected", profile_name="prof_repro_b")
+    assert res["status"] == "updated"
+    assert not cookies_path.exists()
+
+    # Case 2: Plaintext residue has divergent cookies
+    cookies_path.write_text(json.dumps({"SID": "divergent_cookie"}), encoding="utf-8")
+    with pytest.raises(ServiceError, match="Conflict detected.*differ from plaintext residue"):
+        set_storage_mode("protected", profile_name="prof_repro_b")
+    # Plaintext must NOT be deleted!
+    assert cookies_path.exists()
+
+
+def test_zero_footprint_startup_no_operations_dir(tmp_path):
+    """File mode operations and queries must have zero footprint: operations/ is never created on reads."""
+    status = get_storage_status("default")
+    assert status["mode"] == "file"
+    marker = read_operation_marker("default")
+    assert marker is None
+    ops_dir = _get_operations_dir()
+    assert not ops_dir.exists()
+
+
+def test_rename_profile_refuses_when_operation_marker_exists(tmp_path):
+    """rename_profile refuses if an unfinished or corrupt operation marker exists."""
+    auth = AuthManager("rename_src")
+    auth.save_profile(cookies={"SID": "rename_sid"}, email="src@example.com")
+
+    # Case 1: Unfinished marker
+    write_operation_marker(
+        "rename_src", {"operation": "migrate_to_protected", "phase": "preparing"}
+    )
+    with pytest.raises(ServiceError, match="unfinished storage operation is in progress"):
+        rename_profile("rename_src", "rename_dst")
+
+    # Case 2: Corrupt marker
+    marker_path = _get_operations_dir() / "rename_src.json"
+    marker_path.write_text("{corrupt_json_here", encoding="utf-8")
+    with pytest.raises(ServiceError, match="corrupt operation marker"):
+        rename_profile("rename_src", "rename_dst")
+
+
+def test_env_override_disagreement_refused(tmp_path, monkeypatch):
+    """If NLM_AUTH_STORAGE disagrees with on-disk mode, set and resolve refuse with clear message."""
+    auth = AuthManager("env_prof")
+    auth.save_profile(cookies={"SID": "env_sid"}, email="env@example.com")
+    assert get_auth_storage_mode("env_prof") == "file"
+
+    monkeypatch.setenv("NLM_AUTH_STORAGE", "protected")
+    with pytest.raises(
+        ServiceError,
+        match="NLM_AUTH_STORAGE environment variable .* disagrees with on-disk storage mode",
+    ):
+        set_storage_mode("protected", profile_name="env_prof")
+
+    with pytest.raises(
+        ServiceError,
+        match="NLM_AUTH_STORAGE environment variable .* disagrees with on-disk storage mode",
+    ):
+        resolve_storage_conflict("env_prof", choice="file")
+
+
+def test_reconcile_committed_hash_verification_bidirectional(tmp_path):
+    """Reconcile in committed phase deletes matching leftover cookies.json, but keeps divergent copy."""
+    # Direction 1: Matching cookies_hash -> unlinked
+    prof_dir1 = tmp_path / "profiles" / "match_prof"
+    prof_dir1.mkdir(parents=True)
+    cookies_path1 = prof_dir1 / "cookies.json"
+    cookies_path1.write_text(json.dumps({"SID": "match_sid"}), encoding="utf-8")
+    write_operation_marker(
+        "match_prof",
+        {
+            "operation": "migrate_to_protected",
+            "phase": "committed",
+            "cookies_hash": compute_cookies_hash({"SID": "match_sid"}),
+        },
+    )
+    assert reconcile_pending_operations("match_prof") is True
+    assert not cookies_path1.exists()
+
+    # Direction 2: Divergent cookies_hash -> kept and warning logged
+    prof_dir2 = tmp_path / "profiles" / "diff_prof"
+    prof_dir2.mkdir(parents=True)
+    cookies_path2 = prof_dir2 / "cookies.json"
+    cookies_path2.write_text(json.dumps({"SID": "newer_live_sid"}), encoding="utf-8")
+    write_operation_marker(
+        "diff_prof",
+        {
+            "operation": "migrate_to_protected",
+            "phase": "committed",
+            "cookies_hash": compute_cookies_hash({"SID": "old_snapshot_sid"}),
+        },
+    )
+    assert reconcile_pending_operations("diff_prof") is True
+    assert cookies_path2.exists()
+
+
+def test_discard_inaccessible_cases(tmp_path, monkeypatch):
+    """--discard-inaccessible refuses healthy credentials and backend errors, succeeds only for corrupt data."""
+    auth = AuthManager("disc_prof")
+    auth.save_profile(cookies={"SID": "healthy_sid"}, email="healthy@example.com")
+    set_storage_mode("protected", profile_name="disc_prof")
+
+    # Case 1: Healthy and readable credentials -> REFUSE discard
+    with pytest.raises(
+        ServiceError,
+        match="Cannot discard credentials: protected credentials .* are healthy and readable",
+    ):
+        resolve_storage_conflict("disc_prof", choice="file", discard_inaccessible=True)
+
+    # Case 2: Backend unavailable (e.g. headless/no display/locked) -> REFUSE discard
+    orig_read = CredentialStore.read_credentials
+
+    def mock_backend_unavailable(self, name):
+        raise BackendUnavailableError("Keyring daemon is locked")
+
+    monkeypatch.setattr(CredentialStore, "read_credentials", mock_backend_unavailable)
+    with pytest.raises(
+        ServiceError, match="OS credential backend is locked, unavailable, or timed out"
+    ):
+        resolve_storage_conflict("disc_prof", choice="file", discard_inaccessible=True)
+
+    # Case 3: Backend timeout -> REFUSE discard
+    def mock_backend_timeout(self, name):
+        raise BackendTimeoutError("Keystore operation timed out after 60s")
+
+    monkeypatch.setattr(CredentialStore, "read_credentials", mock_backend_timeout)
+    with pytest.raises(
+        ServiceError, match="OS credential backend is locked, unavailable, or timed out"
+    ):
+        resolve_storage_conflict("disc_prof", choice="file", discard_inaccessible=True)
+
+    # Case 4: Truly unrecoverable (corrupt ciphertext) -> ALLOW discard
+    monkeypatch.setattr(CredentialStore, "read_credentials", orig_read)
+    enc_path = get_profile_dir("disc_prof") / "credentials.enc"
+    enc_path.write_text("{bad_cipher", encoding="utf-8")
+    res = resolve_storage_conflict("disc_prof", choice="file", discard_inaccessible=True)
+    assert res["status"] == "resolved"
+    assert not enc_path.exists()
+    assert get_auth_storage_mode("disc_prof") == "file"
+
+
+def test_clear_marker_cases(tmp_path):
+    """--clear-marker refuses if quarantine folder contains files; succeeds when absent."""
+    write_operation_marker(
+        "clear_prof", {"operation": "migrate_to_protected", "phase": "preparing"}
+    )
+
+    # Case 1: Quarantine folder exists and contains files
+    q_dir = _get_operations_dir() / "quarantine" / "clear_prof_op1"
+    q_dir.mkdir(parents=True)
+    (q_dir / "cookies.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(
+        ServiceError, match="Cannot clear marker: quarantine folder .* contains credentials files"
+    ):
+        resolve_storage_conflict("clear_prof", clear_marker=True)
+
+    # Case 2: Quarantine folder cleaned up -> succeeds
+    (q_dir / "cookies.json").unlink()
+    q_dir.rmdir()
+    res = resolve_storage_conflict("clear_prof", clear_marker=True)
+    assert res["status"] == "resolved"
+    assert read_operation_marker("clear_prof") is None
+
+
+def test_reconcile_migrate_to_file_when_keystore_unavailable(tmp_path, monkeypatch):
+    """Reconcile of migrate_to_file when keystore is unavailable changes nothing and keeps marker."""
+    prof_dir = tmp_path / "profiles" / "keystore_unavail_prof"
+    prof_dir.mkdir(parents=True)
+    (prof_dir / "credentials.enc").write_text("enc_payload", encoding="utf-8")
+    write_operation_marker(
+        "keystore_unavail_prof",
+        {"operation": "migrate_to_file", "phase": "committed"},
+    )
+
+    monkeypatch.setattr(CredentialStore, "is_available", lambda self: False)
+    assert reconcile_pending_operations("keystore_unavail_prof") is True
+    # Marker must be kept!
+    assert read_operation_marker("keystore_unavail_prof") is not None
+    # Ciphertext must be kept!
+    assert (prof_dir / "credentials.enc").exists()
+
+
+def test_helper_subprocess_never_takes_profile_lock_no_deadlock(tmp_path):
+    """Helper subprocess operations must never take the profile lock, preventing deadlock when caller holds it."""
+    with get_profile_lock("deadlock_test_prof"):
+        # While profile lock is held by caller, perform a protected save
+        auth = AuthManager("deadlock_test_prof")
+        auth.save_profile(cookies={"SID": "deadlock_sid"}, email="deadlock@example.com")
+        set_storage_mode("protected", profile_name="deadlock_test_prof")
+        # Read back protected credentials
+        profile = auth.load_profile()
+        assert profile.cookies == {"SID": "deadlock_sid"}
+
+
+def test_lock_acquisition_timeout_typed_error(tmp_path, monkeypatch):
+    """Profile lock timeout raises LockAcquisitionTimeoutError with user-friendly message."""
+    import threading
+
+    from filelock import FileLock
+
+    from notebooklm_tools.core import credential_store
+
+    monkeypatch.setattr(credential_store, "LOCK_TIMEOUT_SECONDS", 0.1)
+
+    lock1 = get_profile_lock("timeout_prof")
+    lock1.acquire()
+
+    def run_lock2():
+        lock_path = (tmp_path / "locks" / "timeout_prof.lock").resolve()
+        other_raw = FileLock(lock_path, timeout=0.1)
+        other_lock = credential_store.ProfileLock(other_raw, "timeout_prof")
+        with pytest.raises(
+            LockAcquisitionTimeoutError,
+            match="another nlm process is changing this profile's storage; try again",
+        ):
+            other_lock.acquire()
+
+    th = threading.Thread(target=run_lock2)
+    th.start()
+    th.join()
+    lock1.release()
+
+
+def test_server_info_storage_warning(tmp_path):
+    """server_info includes storage_warning field: None when healthy, short string on conflict, never breaks."""
+    info_healthy = server_info()
+    assert info_healthy["storage_warning"] is None
+
+    # Introduce conflict in default profile
+    auth = AuthManager("default")
+    auth.save_profile(cookies={"SID": "default_sid"}, email="def@example.com")
+    set_storage_mode("protected", profile_name="default")
+    (get_profile_dir("default") / "cookies.json").write_text(
+        json.dumps({"SID": "divergent_plain_sid"}), encoding="utf-8"
+    )
+
+    info_conflict = server_info()
+    assert (
+        info_conflict["storage_warning"]
+        == "Storage conflict detected. Run 'nlm auth storage resolve'."
+    )
+
+
+class SharedFileBackend:
+    def __init__(self, p: Any) -> None:
+        self.p = Path(p)
+
+    def _read(self) -> dict[str, Any]:
+        if not self.p.exists():
+            return {}
+        try:
+            return cast(dict[str, Any], json.loads(self.p.read_text(encoding="utf-8")))
+        except Exception:
+            return {}
+
+    def _write(self, d: dict[str, Any]) -> None:
+        self.p.parent.mkdir(parents=True, exist_ok=True)
+        self.p.write_text(json.dumps(d), encoding="utf-8")
+
+    def get_password(self, s: str, a: str) -> str | None:
+        return self._read().get(f"{s}:{a}")
+
+    def set_password(self, s: str, a: str, pw: str) -> None:
+        d = self._read()
+        d[f"{s}:{a}"] = pw
+        self._write(d)
+
+    def delete_password(self, s: str, a: str) -> None:
+        d = self._read()
+        d.pop(f"{s}:{a}", None)
+        self._write(d)
+
+
+def test_two_process_race_in_suite(tmp_path):
+    """In-suite two-process race test with shrunk timings demonstrating lock serialization and credential preservation."""
+    import os
+    import subprocess
+    import sys
+
+    from notebooklm_tools.core.credential_store import set_backend_factory
+
+    keystore_file = tmp_path / "test_keystore.json"
+    set_backend_factory(lambda: SharedFileBackend(keystore_file))
+
+    backend_setup_code = f"""
+import json
+from pathlib import Path
+class SharedFileBackend:
+    def __init__(self, p):
+        self.p = Path(p)
+    def _read(self):
+        if not self.p.exists(): return {{}}
+        try: return json.loads(self.p.read_text(encoding="utf-8"))
+        except: return {{}}
+    def _write(self, d):
+        self.p.parent.mkdir(parents=True, exist_ok=True)
+        self.p.write_text(json.dumps(d), encoding="utf-8")
+    def get_password(self, s, a):
+        return self._read().get(f"{{s}}:{{a}}")
+    def set_password(self, s, a, pw):
+        d = self._read()
+        d[f"{{s}}:{{a}}"] = pw
+        self._write(d)
+    def delete_password(self, s, a):
+        d = self._read()
+        d.pop(f"{{s}}:{{a}}", None)
+        self._write(d)
+
+from notebooklm_tools.core.credential_store import set_backend_factory
+set_backend_factory(lambda: SharedFileBackend({repr(str(keystore_file))}))
+"""
+
+    auth = AuthManager("race_in_suite")
+    auth.save_profile(cookies={"SID": "initial_sid"}, email="race@example.com")
+
+    code_migration = f"""
+import os
+os.environ["NOTEBOOKLM_MCP_CLI_PATH"] = {repr(str(tmp_path))}
+{backend_setup_code}
+from notebooklm_tools.utils.config import reset_config
+from notebooklm_tools.services.auth_storage import set_storage_mode
+reset_config()
+set_storage_mode("protected", profile_name="race_in_suite")
+"""
+
+    code_save = f"""
+import os
+os.environ["NOTEBOOKLM_MCP_CLI_PATH"] = {repr(str(tmp_path))}
+{backend_setup_code}
+from notebooklm_tools.utils.config import reset_config
+from notebooklm_tools.core.auth import AuthTokens, save_tokens_to_cache
+reset_config()
+t = AuthTokens(cookies={{"SID": "winner_sid"}}, csrf_token="winner_csrf")
+save_tokens_to_cache(t, profile_name="race_in_suite")
+"""
+
+    env = os.environ.copy()
+    env["NOTEBOOKLM_MCP_CLI_PATH"] = str(tmp_path)
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parent.parent.parent / "src")
+
+    p1 = subprocess.Popen([sys.executable, "-c", code_migration], env=env)
+    p2 = subprocess.Popen([sys.executable, "-c", code_save], env=env)
+
+    ret1 = p1.wait(timeout=15)
+    ret2 = p2.wait(timeout=15)
+
+    assert ret1 == 0
+    assert ret2 == 0
+
+    re_auth = AuthManager("race_in_suite")
+    prof = re_auth.load_profile()
+    assert prof.cookies["SID"] in ("winner_sid", "initial_sid")

@@ -29,7 +29,7 @@ MAX_ENVELOPE_SIZE = 1024 * 1024  # 1 MiB bound
 KEY_BYTES = 32  # 256 bits
 NONCE_BYTES = 12  # 96 bits for AES-GCM
 CURRENT_ENVELOPE_VERSION = 1
-LOCK_TIMEOUT_SECONDS = 5.0
+LOCK_TIMEOUT_SECONDS = 60.0
 
 
 class CredentialStoreError(Exception):
@@ -448,11 +448,40 @@ def get_current_backend_id() -> str:
     return backend_id
 
 
+class ProfileLock:
+    """Wrapper around FileLock to ensure typed LockAcquisitionTimeoutError on cross-process timeout."""
+
+    def __init__(self, lock: Any, profile_name: str) -> None:
+        self._lock = lock
+        self._profile_name = profile_name
+
+    def acquire(self, *args: Any, **kwargs: Any) -> Any:
+        from filelock import Timeout as FileLockTimeout
+
+        try:
+            return self._lock.acquire(*args, **kwargs)
+        except FileLockTimeout as exc:
+            raise LockAcquisitionTimeoutError(
+                f"Cannot acquire profile lock for '{self._profile_name}': "
+                "another nlm process is changing this profile's storage; try again."
+            ) from exc
+
+    def release(self, *args: Any, **kwargs: Any) -> Any:
+        return self._lock.release(*args, **kwargs)
+
+    def __enter__(self) -> ProfileLock:
+        self.acquire()
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.release()
+
+
 _LOCKS_CACHE: dict[Path, Any] = {}
 _LOCKS_MUTEX = threading.Lock()
 
 
-def get_profile_lock(profile_name: str, storage_dir: Path | None = None) -> Any:
+def get_profile_lock(profile_name: str, storage_dir: Path | None = None) -> ProfileLock:
     """Return a shared FileLock instance for the profile within the process.
 
     Sharing the FileLock instance enables re-entrancy within the same process
@@ -472,7 +501,8 @@ def get_profile_lock(profile_name: str, storage_dir: Path | None = None) -> Any:
     with _LOCKS_MUTEX:
         if lock_path not in _LOCKS_CACHE:
             _LOCKS_CACHE[lock_path] = FileLock(lock_path, timeout=LOCK_TIMEOUT_SECONDS)
-        return _LOCKS_CACHE[lock_path]
+        raw_lock = _LOCKS_CACHE[lock_path]
+    return ProfileLock(raw_lock, profile_name)
 
 
 class CredentialStore:
@@ -532,12 +562,7 @@ class CredentialStore:
         return self._storage_dir / "profiles" / profile_name
 
     def _get_operation_marker_path(self, profile_name: str) -> Path:
-        ops_dir = self._storage_dir / "operations"
-        ops_dir.mkdir(parents=True, exist_ok=True)
-        if os.name == "posix":
-            with contextlib.suppress(OSError):
-                os.chmod(ops_dir, 0o700)
-        return ops_dir / f"{profile_name}.json"
+        return self._storage_dir / "operations" / f"{profile_name}.json"
 
     def _write_operation_marker(
         self,
@@ -547,6 +572,10 @@ class CredentialStore:
         expected_revision: str | None = None,
     ) -> None:
         marker_file = self._get_operation_marker_path(profile_name)
+        marker_file.parent.mkdir(parents=True, exist_ok=True)
+        if os.name == "posix":
+            with contextlib.suppress(OSError):
+                marker_file.parent.chmod(0o700)
         data = {
             "version": 1,
             "op_id": secrets.token_hex(8),

@@ -21,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
+from notebooklm_tools.core.credential_backend_worker import BackendTimeoutError
 from notebooklm_tools.core.credential_store import (
     BackendUnavailableError,
     CredentialStore,
@@ -37,6 +38,25 @@ from notebooklm_tools.utils.config import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def get_raw_on_disk_storage_mode(profile_name: str, storage_dir: Path | None = None) -> str:
+    """Read the storage mode marker directly from disk without consulting NLM_AUTH_STORAGE env."""
+    if storage_dir is not None:
+        p_dir = storage_dir / "profiles" / profile_name
+    else:
+        p_dir = get_profile_dir(profile_name, create=False)
+    marker = p_dir / "storage-mode.json"
+    if marker.exists():
+        try:
+            data = json.loads(marker.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                mode = data.get("mode")
+                if mode in ("file", "protected"):
+                    return str(mode)
+        except Exception:
+            pass
+    return "file"
 
 
 class StorageConflictError(NLMError):
@@ -56,13 +76,8 @@ class StorageConflictError(NLMError):
 
 
 def _get_operations_dir() -> Path:
-    """Return the restrictive operations tracking directory."""
-    ops_dir = get_storage_dir() / "operations"
-    safe_mkdir(ops_dir, parents=True)
-    if os.name == "posix":
-        with contextlib.suppress(OSError):
-            ops_dir.chmod(0o700)
-    return ops_dir
+    """Return the operations tracking directory path without creating it on disk."""
+    return get_storage_dir() / "operations"
 
 
 def _get_marker_path(profile_name: str) -> Path:
@@ -75,6 +90,9 @@ def _atomic_write_json(target_path: Path, data: Any) -> None:
     """Write JSON data to target_path atomically with 0600 permissions."""
     parent = target_path.parent
     safe_mkdir(parent, parents=True)
+    if os.name == "posix":
+        with contextlib.suppress(OSError):
+            parent.chmod(0o700)
     tmp_path = parent / f"{target_path.name}.tmp.{os.getpid()}.{secrets.token_hex(4)}"
     try:
         fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -101,7 +119,7 @@ def write_operation_marker(profile_name: str, marker_data: dict[str, Any]) -> No
 
 
 def read_operation_marker(profile_name: str) -> dict[str, Any] | None:
-    """Read the operation marker for a profile, if it exists."""
+    """Read the operation marker for a profile, returning a corrupt descriptor if unreadable."""
     marker_path = _get_marker_path(profile_name)
     if not marker_path.exists():
         return None
@@ -109,10 +127,22 @@ def read_operation_marker(profile_name: str) -> dict[str, Any] | None:
         data = json.loads(marker_path.read_text(encoding="utf-8"))
         if isinstance(data, dict):
             return cast(dict[str, Any], data)
-        return None
+        return {
+            "corrupt": True,
+            "operation": "unknown",
+            "phase": "corrupt",
+            "error": "Marker file is not a JSON object",
+            "marker_path": str(marker_path),
+        }
     except Exception as exc:
-        logger.debug(f"Failed to read operation marker at {marker_path}: {exc}")
-        return None
+        logger.warning(f"Corrupt or unreadable operation marker at {marker_path}: {exc}")
+        return {
+            "corrupt": True,
+            "operation": "unknown",
+            "phase": "corrupt",
+            "error": str(exc),
+            "marker_path": str(marker_path),
+        }
 
 
 def clear_operation_marker(profile_name: str) -> None:
@@ -121,6 +151,28 @@ def clear_operation_marker(profile_name: str) -> None:
     if marker_path.exists():
         with contextlib.suppress(OSError):
             marker_path.unlink()
+
+
+def compute_cookies_hash(cookies: Any) -> str:
+    """Compute a SHA-256 hash of canonical cookies representation."""
+    import hashlib
+
+    canonical_key = _canonical_cookie_key(cookies)
+    data = json.dumps(canonical_key, sort_keys=True)
+    return hashlib.sha256(data.encode("utf-8")).hexdigest()
+
+
+def compute_secrets_hash(secret_payload: dict[str, Any] | None) -> str:
+    """Compute a SHA-256 hash of canonical secrets for tamper/match verification without storing plaintext."""
+    import hashlib
+
+    if not secret_payload:
+        return ""
+    cookies_key = _canonical_cookie_key(secret_payload.get("cookies"))
+    csrf = str(secret_payload.get("csrf_token") or "")
+    sess = str(secret_payload.get("session_id") or "")
+    data = json.dumps([cookies_key, csrf, sess], sort_keys=True)
+    return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 
 def _canonical_cookie_key(raw_cookies: Any) -> tuple[Any, ...]:
@@ -323,9 +375,18 @@ def migrate_profile_to_protected(profile_name: str) -> dict[str, Any]:
     """
     validate_profile_name(profile_name, strict=True)
 
+    current_mode = get_raw_on_disk_storage_mode(profile_name)
+    if current_mode == "protected":
+        raise CredentialStoreError(f"Profile '{profile_name}' is already in protected mode.")
+
     # Check for existing operation marker
     existing_marker = read_operation_marker(profile_name)
     if existing_marker:
+        if existing_marker.get("corrupt"):
+            raise CredentialStoreError(
+                f"Cannot change storage mode: profile '{profile_name}' has a corrupt operation marker at '{existing_marker.get('marker_path')}'. "
+                "Inspect or remove it before changing storage mode."
+            )
         raise CredentialStoreError(
             f"Cannot change storage mode: profile '{profile_name}' has an unfinished operation in progress. "
             "Run 'nlm auth storage resolve' or inspect 'nlm auth storage status' first."
@@ -344,10 +405,19 @@ def migrate_profile_to_protected(profile_name: str) -> dict[str, Any]:
 
     with get_profile_lock(profile_name):
         # Re-check marker under lock
-        if read_operation_marker(profile_name):
+        marker_check = read_operation_marker(profile_name)
+        if marker_check:
+            if marker_check.get("corrupt"):
+                raise CredentialStoreError(
+                    f"Cannot change storage mode: profile '{profile_name}' has a corrupt operation marker."
+                )
             raise CredentialStoreError(
                 f"Cannot change storage mode: profile '{profile_name}' has an unfinished operation in progress."
             )
+
+        # Re-check mode under lock
+        if get_raw_on_disk_storage_mode(profile_name) == "protected":
+            raise CredentialStoreError(f"Profile '{profile_name}' is already in protected mode.")
 
         snapshot = capture_file_mode_snapshot(profile_name)
         if snapshot is None:
@@ -372,6 +442,14 @@ def migrate_profile_to_protected(profile_name: str) -> dict[str, Any]:
         quarantine_dir = ops_dir / "quarantine" / f"{profile_name}_{op_id}"
         safe_mkdir(quarantine_dir, parents=True)
 
+        secret_payload = {
+            "cookies": snapshot["cookies"],
+            "csrf_token": snapshot.get("csrf_token", ""),
+            "session_id": snapshot.get("session_id", ""),
+        }
+        cookies_hash = compute_cookies_hash(snapshot["cookies"])
+        secrets_hash = compute_secrets_hash(secret_payload)
+
         marker_data = {
             "version": 1,
             "operation_id": op_id,
@@ -382,15 +460,10 @@ def migrate_profile_to_protected(profile_name: str) -> dict[str, Any]:
             "quarantine_dir": str(quarantine_dir),
             "ciphertext_preexisted": ciphertext_preexisted,
             "key_preexisted": key_preexisted,
-            "snapshot": snapshot,
+            "cookies_hash": cookies_hash,
+            "secrets_hash": secrets_hash,
         }
         write_operation_marker(profile_name, marker_data)
-
-        secret_payload = {
-            "cookies": snapshot["cookies"],
-            "csrf_token": snapshot.get("csrf_token", ""),
-            "session_id": snapshot.get("session_id", ""),
-        }
 
         try:
             # 1. Encrypt and write to CredentialStore
@@ -403,7 +476,7 @@ def migrate_profile_to_protected(profile_name: str) -> dict[str, Any]:
                     f"Verification failed after encrypting credentials for profile '{profile_name}'"
                 )
 
-            # 3. Quarantine source plaintext files
+            # 3. Quarantine source plaintext files (profile files AND root mirror if default)
             cookies_file = profile_dir / "cookies.json"
             quarantined_files: list[tuple[Path, Path]] = []
             if cookies_file.exists():
@@ -417,30 +490,6 @@ def migrate_profile_to_protected(profile_name: str) -> dict[str, Any]:
                 shutil.move(str(legacy_auth), str(dest))
                 quarantined_files.append((dest, legacy_auth))
 
-            # 4. Check if quarantined files match snapshot (data-loss prevention!)
-            # If any quarantined file changed since snapshot was captured, abort and restore!
-            re_read_cookies: Any = None
-            if (quarantine_dir / "cookies.json").exists():
-                re_read_cookies = json.loads(
-                    (quarantine_dir / "cookies.json").read_text(encoding="utf-8")
-                )
-            elif (quarantine_dir / "auth.json").exists():
-                re_read_cookies = json.loads(
-                    (quarantine_dir / "auth.json").read_text(encoding="utf-8")
-                ).get("cookies")
-
-            if _canonical_cookie_key(re_read_cookies) != _canonical_cookie_key(snapshot["cookies"]):
-                # Mismatch! A concurrent write happened. Abort and restore immediately!
-                for q_src, orig_dest in quarantined_files:
-                    if q_src.exists():
-                        shutil.move(str(q_src), str(orig_dest))
-                shutil.rmtree(quarantine_dir, ignore_errors=True)
-                raise CredentialStoreError(
-                    f"Credentials file for profile '{profile_name}' was modified concurrently during migration. "
-                    "Aborting migration and restoring source files to prevent data loss."
-                )
-
-            # 5. Quarantine root mirror if configured default profile
             configured_default = get_config().auth.default_profile
             root_auth = get_storage_dir() / "auth.json"
             if (
@@ -452,11 +501,63 @@ def migrate_profile_to_protected(profile_name: str) -> dict[str, Any]:
                 shutil.move(str(root_auth), str(dest))
                 quarantined_files.append((dest, root_auth))
 
-            # 6. Transition to committed phase
+            # 4. Check if quarantined files match snapshot (data-loss prevention!)
+            # If any quarantined file changed since snapshot was captured, abort and restore!
+            re_read_cookies: Any = None
+            if (quarantine_dir / "cookies.json").exists():
+                re_read_cookies = json.loads(
+                    (quarantine_dir / "cookies.json").read_text(encoding="utf-8")
+                )
+            elif (quarantine_dir / "auth.json").exists():
+                re_read_cookies = json.loads(
+                    (quarantine_dir / "auth.json").read_text(encoding="utf-8")
+                ).get("cookies")
+            elif (quarantine_dir / "root_auth.json").exists():
+                re_read_cookies = json.loads(
+                    (quarantine_dir / "root_auth.json").read_text(encoding="utf-8")
+                ).get("cookies")
+
+            re_read_csrf = snapshot.get("csrf_token", "")
+            re_read_sess = snapshot.get("session_id", "")
+            if (quarantine_dir / "auth.json").exists():
+                try:
+                    q_data = json.loads((quarantine_dir / "auth.json").read_text(encoding="utf-8"))
+                    re_read_csrf = q_data.get("csrf_token", "") or re_read_csrf
+                    re_read_sess = q_data.get("session_id", "") or re_read_sess
+                except Exception:
+                    pass
+            elif (quarantine_dir / "root_auth.json").exists():
+                try:
+                    q_data = json.loads(
+                        (quarantine_dir / "root_auth.json").read_text(encoding="utf-8")
+                    )
+                    re_read_csrf = q_data.get("csrf_token", "") or re_read_csrf
+                    re_read_sess = q_data.get("session_id", "") or re_read_sess
+                except Exception:
+                    pass
+
+            re_read_payload = {
+                "cookies": re_read_cookies,
+                "csrf_token": re_read_csrf,
+                "session_id": re_read_sess,
+            }
+
+            if compute_secrets_hash(re_read_payload) != secrets_hash:
+                # Mismatch! A concurrent write happened. Abort and restore immediately!
+                for q_src, orig_dest in quarantined_files:
+                    if q_src.exists():
+                        shutil.move(str(q_src), str(orig_dest))
+                shutil.rmtree(quarantine_dir, ignore_errors=True)
+                raise CredentialStoreError(
+                    f"Credentials file for profile '{profile_name}' was modified concurrently during migration. "
+                    "Aborting migration and restoring source files to prevent data loss."
+                )
+
+            # 5. Transition to committed phase
             marker_data["phase"] = "committed"
             write_operation_marker(profile_name, marker_data)
 
-            # 7. Write sanitized metadata.json (zero secrets)
+            # 6. Write sanitized metadata.json (zero secrets)
             sanitized_metadata = {
                 "email": snapshot.get("email"),
                 "build_label": snapshot.get("build_label"),
@@ -466,24 +567,19 @@ def migrate_profile_to_protected(profile_name: str) -> dict[str, Any]:
             }
             _atomic_write_json(profile_dir / "metadata.json", sanitized_metadata)
 
-            # 8. Persist storage mode marker as protected
+            # 7. Persist storage mode marker as protected
             set_auth_storage_mode(profile_name, "protected")
 
-            # 9. Transition to cleanup phase and unlink quarantine
+            # 8. Transition to cleanup phase and unlink quarantine
             marker_data["phase"] = "cleanup"
             write_operation_marker(profile_name, marker_data)
 
-            removed_files: list[str] = [orig.name for _, orig in quarantined_files]
-            if profile_name == configured_default and any(
-                orig == root_auth for _, orig in quarantined_files
-            ):
-                removed_files = [
-                    f
-                    if f != "auth.json" or orig != root_auth
-                    else "~/.notebooklm-mcp-cli/auth.json"
-                    for _, orig in quarantined_files
-                    for f in [orig.name]
-                ]
+            removed_files: list[str] = []
+            for _, orig in quarantined_files:
+                if orig == root_auth:
+                    removed_files.append("~/.notebooklm-mcp-cli/auth.json")
+                else:
+                    removed_files.append(orig.name)
 
             shutil.rmtree(quarantine_dir, ignore_errors=True)
             clear_operation_marker(profile_name)
@@ -533,8 +629,17 @@ def migrate_profile_to_file(profile_name: str) -> dict[str, Any]:
     """
     validate_profile_name(profile_name, strict=False)
 
+    current_mode = get_raw_on_disk_storage_mode(profile_name)
+    if current_mode == "file":
+        raise CredentialStoreError(f"Profile '{profile_name}' is already in file mode.")
+
     existing_marker = read_operation_marker(profile_name)
     if existing_marker:
+        if existing_marker.get("corrupt"):
+            raise CredentialStoreError(
+                f"Cannot change storage mode: profile '{profile_name}' has a corrupt operation marker at '{existing_marker.get('marker_path')}'. "
+                "Inspect or remove it before changing storage mode."
+            )
         raise CredentialStoreError(
             f"Cannot change storage mode: profile '{profile_name}' has an unfinished operation in progress. "
             "Run 'nlm auth storage resolve' or inspect 'nlm auth storage status' first."
@@ -545,6 +650,19 @@ def migrate_profile_to_file(profile_name: str) -> dict[str, Any]:
     from notebooklm_tools.core.credential_store import get_profile_lock
 
     with get_profile_lock(profile_name):
+        marker_check = read_operation_marker(profile_name)
+        if marker_check:
+            if marker_check.get("corrupt"):
+                raise CredentialStoreError(
+                    f"Cannot change storage mode: profile '{profile_name}' has a corrupt operation marker."
+                )
+            raise CredentialStoreError(
+                f"Cannot change storage mode: profile '{profile_name}' has an unfinished operation in progress."
+            )
+
+        if get_raw_on_disk_storage_mode(profile_name) == "file":
+            raise CredentialStoreError(f"Profile '{profile_name}' is already in file mode.")
+
         profile_dir = get_profile_dir(profile_name, create=False)
         enc_file = profile_dir / "credentials.enc"
 
@@ -577,6 +695,10 @@ def migrate_profile_to_file(profile_name: str) -> dict[str, Any]:
                 meta = json.loads(metadata_file.read_text(encoding="utf-8"))
 
         op_id = secrets.token_hex(8)
+        cookies_hash = compute_cookies_hash(cookies)
+        secrets_hash = compute_secrets_hash(
+            {"cookies": cookies, "csrf_token": csrf_token, "session_id": session_id}
+        )
         marker_data = {
             "version": 1,
             "operation_id": op_id,
@@ -584,6 +706,8 @@ def migrate_profile_to_file(profile_name: str) -> dict[str, Any]:
             "profile": profile_name,
             "phase": "preparing",
             "timestamp": datetime.now().isoformat(),
+            "cookies_hash": cookies_hash,
+            "secrets_hash": secrets_hash,
         }
         write_operation_marker(profile_name, marker_data)
 
@@ -656,6 +780,12 @@ def reconcile_pending_operations(profile_name: str) -> bool:
             if not marker:
                 return False
 
+            if marker.get("corrupt"):
+                warn_msg = f"Warning: detected corrupt or unreadable operation marker for profile '{profile_name}' at '{marker.get('marker_path')}'."
+                print(warn_msg, file=sys.stderr)
+                logger.warning(warn_msg)
+                return True
+
             op = marker.get("operation")
             phase = marker.get("phase")
             quarantine_str = marker.get("quarantine_dir")
@@ -669,6 +799,15 @@ def reconcile_pending_operations(profile_name: str) -> bool:
 
             if op == "migrate_to_protected":
                 if phase == "preparing":
+                    if not store.is_available():
+                        warn = (
+                            f"Recovery pending for profile '{profile_name}': keystore access is required. "
+                            "Keystore is currently locked or unavailable."
+                        )
+                        print(f"Warning: {warn}", file=sys.stderr)
+                        logger.warning(warn)
+                        return True
+
                     # Aborted before commitment: restore quarantined files if moved, discard marker
                     if quarantine_dir and quarantine_dir.exists():
                         for item in quarantine_dir.iterdir():
@@ -694,21 +833,43 @@ def reconcile_pending_operations(profile_name: str) -> bool:
                     clear_operation_marker(profile_name)
 
                 elif phase in ("committed", "cleanup"):
-                    # Ciphertext was committed: complete cleanup only if live files still match snapshot
-                    snapshot = marker.get("snapshot")
+                    cookies_hash = marker.get("cookies_hash")
+                    secrets_hash = marker.get("secrets_hash")
                     if quarantine_dir and quarantine_dir.exists():
                         shutil.rmtree(quarantine_dir, ignore_errors=True)
                     set_auth_storage_mode(profile_name, "protected")
 
+                    # Sanitize metadata.json to ensure no secrets remain!
+                    metadata_file = profile_dir / "metadata.json"
+                    if metadata_file.exists():
+                        try:
+                            meta = json.loads(metadata_file.read_text(encoding="utf-8"))
+                            if isinstance(meta, dict) and (
+                                "csrf_token" in meta or "session_id" in meta
+                            ):
+                                meta.pop("csrf_token", None)
+                                meta.pop("session_id", None)
+                                _atomic_write_json(metadata_file, meta)
+                        except Exception as e:
+                            logger.debug(f"Failed to sanitize metadata during reconcile: {e}")
+
                     cookies_file = profile_dir / "cookies.json"
                     if cookies_file.exists():
-                        # Only delete cookies.json if its content matches the committed snapshot!
                         with contextlib.suppress(Exception):
                             current_cookies = json.loads(cookies_file.read_text(encoding="utf-8"))
-                            if snapshot and _canonical_cookie_key(
-                                current_cookies
-                            ) == _canonical_cookie_key(snapshot.get("cookies")):
+                            if (
+                                cookies_hash
+                                and compute_cookies_hash(current_cookies) == cookies_hash
+                            ) or (
+                                secrets_hash
+                                and compute_secrets_hash({"cookies": current_cookies})
+                                == secrets_hash
+                            ):
                                 cookies_file.unlink()
+                            else:
+                                warn = f"Warning: preserved divergent cookies.json during reconcile for profile '{profile_name}'."
+                                print(warn, file=sys.stderr)
+                                logger.warning(warn)
 
                     configured_default = get_config().auth.default_profile
                     if profile_name == configured_default:
@@ -716,25 +877,85 @@ def reconcile_pending_operations(profile_name: str) -> bool:
                         if root_auth.exists() and not root_auth.is_symlink():
                             with contextlib.suppress(Exception):
                                 current_root = json.loads(root_auth.read_text(encoding="utf-8"))
-                                if snapshot and _canonical_cookie_key(
-                                    current_root.get("cookies")
-                                ) == _canonical_cookie_key(snapshot.get("cookies")):
+                                cur_root_cookies = current_root.get("cookies")
+                                if (
+                                    cookies_hash
+                                    and compute_cookies_hash(cur_root_cookies) == cookies_hash
+                                ) or (
+                                    secrets_hash
+                                    and compute_secrets_hash(current_root) == secrets_hash
+                                ):
                                     root_auth.unlink()
+                                else:
+                                    warn = f"Warning: preserved divergent root auth.json during reconcile for profile '{profile_name}'."
+                                    print(warn, file=sys.stderr)
+                                    logger.warning(warn)
 
                     clear_operation_marker(profile_name)
 
             elif op == "migrate_to_file":
-                # Recognize already published target
                 cookies_file = profile_dir / "cookies.json"
-                if cookies_file.exists():
+                enc_file = profile_dir / "credentials.enc"
+                published_matches = False
+                keystore_unavailable = False
+
+                if enc_file.exists():
+                    if not store.is_available():
+                        keystore_unavailable = True
+                    elif cookies_file.exists():
+                        try:
+                            ct_payload = store.read_credentials(profile_name)
+                            if ct_payload and ct_payload.get("cookies"):
+                                file_cookies = json.loads(cookies_file.read_text(encoding="utf-8"))
+                                file_meta = {}
+                                metadata_file = profile_dir / "metadata.json"
+                                if metadata_file.exists():
+                                    with contextlib.suppress(Exception):
+                                        file_meta = json.loads(
+                                            metadata_file.read_text(encoding="utf-8")
+                                        )
+                                file_payload = {
+                                    "cookies": file_cookies,
+                                    "csrf_token": file_meta.get("csrf_token", ""),
+                                    "session_id": file_meta.get("session_id", ""),
+                                }
+                                if canonical_secrets_equal(ct_payload, file_payload):
+                                    published_matches = True
+                        except (BackendUnavailableError, BackendTimeoutError) as exc:
+                            keystore_unavailable = True
+                            logger.warning(
+                                f"Keystore unavailable during reconcile for '{profile_name}': {exc}"
+                            )
+                        except Exception:
+                            published_matches = False
+
+                if keystore_unavailable:
+                    warn = (
+                        f"Recovery pending for profile '{profile_name}': keystore access is required to verify export. "
+                        "Keystore is currently locked or unavailable."
+                    )
+                    print(f"Warning: {warn}", file=sys.stderr)
+                    logger.warning(warn)
+                    return True
+
+                if published_matches:
                     set_auth_storage_mode(profile_name, "file")
-                    enc_file = profile_dir / "credentials.enc"
                     if enc_file.exists():
                         with contextlib.suppress(OSError):
                             enc_file.unlink()
                     with contextlib.suppress(Exception):
                         store.delete_credentials(profile_name)
-                clear_operation_marker(profile_name)
+                    clear_operation_marker(profile_name)
+                else:
+                    # Roll back mode to protected, do NOT delete ciphertext or key!
+                    set_auth_storage_mode(profile_name, "protected")
+                    clear_operation_marker(profile_name)
+                    warn = (
+                        f"Interrupted migrate_to_file for profile '{profile_name}' could not verify export. "
+                        "Preserved protected ciphertext and key; conflict flagged for review."
+                    )
+                    print(f"Warning: {warn}", file=sys.stderr)
+                    logger.warning(warn)
             else:
                 clear_operation_marker(profile_name)
 
