@@ -17,13 +17,18 @@ def _isolate_storage(monkeypatch, tmp_path, request):
     but NLM_AUTH_STORAGE is forced to 'file' to guarantee no migration,
     deletion, or protected-mode code paths can ever run during E2E.
     """
+    from notebooklm_tools.utils.config import reset_config
+
     if os.environ.get("NOTEBOOKLM_E2E") and request.node.get_closest_marker("e2e"):
         monkeypatch.setenv("NLM_AUTH_STORAGE", "file")
+        reset_config()
+        try:
+            yield
+        finally:
+            reset_config()
         return
 
     monkeypatch.setenv("NOTEBOOKLM_MCP_CLI_PATH", str(tmp_path / "storage"))
-    from notebooklm_tools.utils.config import reset_config
-
     reset_config()
     try:
         yield
