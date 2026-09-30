@@ -115,6 +115,73 @@ def service_error_result(error: ServiceError, *, status: str = "error") -> Resul
 _client: NotebookLMClient | None = None
 _client_lock = threading.Lock()
 _query_timeout: float = float(os.environ.get("NOTEBOOKLM_QUERY_TIMEOUT", "120.0"))
+_mcp_probe_event = threading.Event()
+_mcp_probe_available = False
+
+
+def reset_mcp_probe_state() -> None:
+    """Reset the MCP background probe state (for testing)."""
+    global _mcp_probe_available
+    _mcp_probe_available = False
+    _mcp_probe_event.clear()
+
+
+def start_mcp_background_probe() -> None:
+    """Start background probe thread once at MCP server start."""
+    _mcp_probe_event.clear()
+
+    def _worker() -> None:
+        global _mcp_probe_available
+        try:
+            from notebooklm_tools.core.notices import is_mcp_notice_shown
+
+            if is_mcp_notice_shown():
+                _mcp_probe_available = False
+                return
+
+            from notebooklm_tools.services.auth import AuthManager
+            from notebooklm_tools.utils.config import get_auth_storage_mode, get_config
+
+            profile = get_config().auth.default_profile
+            if not AuthManager(profile).profile_exists():
+                _mcp_probe_available = False
+                return
+
+            if get_auth_storage_mode(profile) != "file":
+                _mcp_probe_available = False
+                return
+
+            from notebooklm_tools.core.credential_store import CredentialStore
+
+            store = CredentialStore()
+            _mcp_probe_available = store.should_offer_protection(profile_name=profile)
+        except Exception:
+            _mcp_probe_available = False
+        finally:
+            _mcp_probe_event.set()
+
+    t = threading.Thread(target=_worker, name="nlm-mcp-bg-probe", daemon=True)
+    t.start()
+
+
+def maybe_attach_mcp_notice(result: Any) -> None:
+    """Attach one-time notice to tool response if background probe has completed and succeeded.
+
+    Never probes inside tool calls. If background thread hasn't finished, does not attach notice.
+    """
+    if not isinstance(result, dict):
+        return
+    if not _mcp_probe_event.is_set() or not _mcp_probe_available:
+        return
+    from notebooklm_tools.core.notices import is_mcp_notice_shown, mark_mcp_notice_shown
+
+    if is_mcp_notice_shown():
+        return
+
+    result["notice"] = (
+        "Tip: Protect your stored login in the OS keychain with 'nlm auth storage set protected'."
+    )
+    mark_mcp_notice_shown()
 
 
 def get_query_timeout() -> float:
@@ -277,6 +344,7 @@ def logged_tool() -> Callable[[Callable[P, Any]], Callable[P, Any]]:
                     mcp_logger.debug(f"MCP Request: {tool_name}({json.dumps(params, default=str)})")
 
                 result: Any = await async_func(*args, **kwargs)
+                maybe_attach_mcp_notice(result)
 
                 if mcp_logger.isEnabledFor(logging.DEBUG):
                     result_str = json.dumps(_redact(result), default=str)
@@ -298,6 +366,7 @@ def logged_tool() -> Callable[[Callable[P, Any]], Callable[P, Any]]:
                     mcp_logger.debug(f"MCP Request: {tool_name}({json.dumps(params, default=str)})")
 
                 result: R = sync_func(*args, **kwargs)
+                maybe_attach_mcp_notice(result)
 
                 if mcp_logger.isEnabledFor(logging.DEBUG):
                     result_str = json.dumps(_redact(result), default=str)

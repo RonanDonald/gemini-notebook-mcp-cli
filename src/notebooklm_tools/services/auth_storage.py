@@ -7,6 +7,7 @@ Translates core storage contracts into service results and errors.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 from pathlib import Path
 from typing import Any, TypedDict
@@ -620,3 +621,87 @@ def rename_profile(old_name: str, new_name: str) -> RenameProfileResult:
         is_default=is_default,
         message=msg,
     )
+
+
+def find_plain_backup_files(
+    profile_name: str,
+    storage_dir: Path | None = None,
+    home_dir: Path | None = None,
+) -> list[Path]:
+    """Find leftover plaintext login backup files for a profile.
+
+    IMPORTANT: Never touches the `backups/` directory, which holds `nlm setup`'s
+    MCP-config and skill backups.
+
+    Only includes files that match specific known backup locations AND provably parse
+    as JSON containing login credential keys:
+    - `auth.json.backup-*` directly in the storage root
+    - `cookies.json.bak`, `auth.json.bak`, or `metadata.json.bak` inside that profile's folder
+    - Legacy `~/.notebooklm-mcp/auth.json`
+    """
+    from notebooklm_tools.utils.config import get_storage_dir
+
+    root = storage_dir if storage_dir is not None else get_storage_dir()
+    if home_dir is not None:
+        home = home_dir
+    elif os.environ.get("NOTEBOOKLM_MCP_CLI_PATH"):
+        home = root.parent
+    else:
+        from notebooklm_tools.utils.config import get_home_dir
+
+        home = get_home_dir()
+
+    candidates: list[Path] = []
+
+    # 1. Root auth.json.backup-* (directly in root, NOT inside backups/ or subdirectories)
+    if root.exists():
+        for item in root.glob("auth.json.backup-*"):
+            if item.is_file() and not item.is_symlink():
+                candidates.append(item)
+
+    # 2. Profile folder backups
+    profile_dir = root / "profiles" / profile_name
+    if profile_dir.exists():
+        for name in ("cookies.json.bak", "auth.json.bak", "metadata.json.bak"):
+            target = profile_dir / name
+            if target.is_file() and not target.is_symlink():
+                candidates.append(target)
+
+    # 3. Legacy ~/.notebooklm-mcp/auth.json
+    legacy_file = home / ".notebooklm-mcp" / "auth.json"
+    if legacy_file.is_file() and not legacy_file.is_symlink():
+        candidates.append(legacy_file)
+
+    valid_files: list[Path] = []
+    for path in candidates:
+        try:
+            content = path.read_text(encoding="utf-8")
+            data = json.loads(content)
+            if not isinstance(data, dict):
+                continue
+            if path.name == "metadata.json.bak":
+                if "csrf_token" in data or "session_id" in data:
+                    valid_files.append(path)
+            else:
+                if "cookies" in data:
+                    valid_files.append(path)
+        except Exception:
+            continue
+
+    return sorted(valid_files)
+
+
+def remove_plain_backup_files(files: list[Path]) -> list[Path]:
+    """Remove candidate plaintext backup files safely.
+
+    Never deletes directories or symlinks.
+    """
+    removed: list[Path] = []
+    for file in files:
+        if file.is_file() and not file.is_symlink():
+            try:
+                file.unlink()
+                removed.append(file)
+            except OSError:
+                pass
+    return removed

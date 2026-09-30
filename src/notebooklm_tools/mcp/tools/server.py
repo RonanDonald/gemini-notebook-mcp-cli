@@ -129,6 +129,37 @@ def _check_storage_warning() -> str | None:
         return None
 
 
+def _check_storage_notice() -> str | None:
+    """Return storage notice if default profile is file mode and keystore is available."""
+    try:
+        from notebooklm_tools.mcp.tools._utils import _mcp_probe_available, _mcp_probe_event
+        from notebooklm_tools.services.auth import AuthManager
+        from notebooklm_tools.utils.config import get_auth_storage_mode, get_config
+
+        profile = get_config().auth.default_profile
+        if not AuthManager(profile).profile_exists():
+            return None
+        if get_auth_storage_mode(profile) != "file":
+            return None
+
+        if _mcp_probe_event.is_set():
+            if not _mcp_probe_available:
+                return None
+        else:
+            from notebooklm_tools.core.credential_store import CredentialStore
+
+            store = CredentialStore()
+            if not store.should_offer_protection(profile_name=profile):
+                return None
+
+        return (
+            "Optional: this login can be protected in the OS keychain with "
+            "'nlm auth storage set protected'. Mention it to the user once if relevant."
+        )
+    except Exception:
+        return None
+
+
 @logged_tool()
 def server_info() -> dict[str, Any]:
     """Get version, auth status, and conservative MCP capability visibility.
@@ -174,7 +205,7 @@ def server_info() -> dict[str, Any]:
     if latest:
         update_available = _compare_versions(__version__, latest)
 
-    return {
+    info: dict[str, Any] = {
         "status": "success",
         "version": __version__,
         "latest_version": latest,
@@ -192,3 +223,9 @@ def server_info() -> dict[str, Any]:
             ),
         },
     }
+
+    storage_notice = _check_storage_notice()
+    if storage_notice:
+        info["storage_notice"] = storage_notice
+
+    return info

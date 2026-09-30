@@ -45,6 +45,26 @@ def is_desktop_session() -> bool:
         return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
+def is_definitely_non_desktop() -> bool:
+    """Check cheap session hints to immediately detect non-desktop environments.
+
+    Returns True if this is an SSH session, a container, or a Linux session
+    without a D-Bus session bus. Used to short-circuit awareness notices/invites
+    without spawning helpers or attempting keychain access.
+    """
+    if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
+        return True
+    if sys.platform.startswith("linux") and not os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
+        return True
+    return bool(
+        os.path.exists("/.dockerenv")
+        or os.path.exists("/run/.containerenv")
+        or ("container" in os.environ)
+        or bool(os.environ.get("CONTAINER"))
+        or bool(os.environ.get("KUBERNETES_SERVICE_HOST"))
+    )
+
+
 def get_default_timeout() -> float:
     """Return default timeout based on session type."""
     return DEFAULT_TIMEOUT_DESKTOP if is_desktop_session() else DEFAULT_TIMEOUT_HEADLESS
@@ -86,6 +106,11 @@ class CredentialWorkerClient:
     def delete_password(self, service: str, account: str) -> None:
         """Delete a secret with a bounded deadline."""
         self._execute({"op": "delete", "service": service, "account": account})
+
+    def probe(self, service: str, account: str) -> bool:
+        """Run a throwaway write-read-delete probe in the keystore."""
+        res = self._execute({"op": "probe", "service": service, "account": account})
+        return bool(res)
 
     def identify(self) -> str:
         """Identify the active OS keystore backend."""
@@ -165,6 +190,22 @@ class CredentialWorkerClient:
                         "Failed to verify key persistence in OS store upon write"
                     )
                 return {"key": candidate_key, "created": True, "backend_id": backend_id}
+            elif op == "probe":
+                import logging
+
+                logger = logging.getLogger("notebooklm_tools.core.credential_store")
+                probe_val = "probe_test"
+                try:
+                    backend.set_password(service, account, probe_val)
+                    readback = backend.get_password(service, account)
+                    return readback == probe_val
+                finally:
+                    try:
+                        backend.delete_password(service, account)
+                    except Exception as del_err:
+                        logger.warning(
+                            "Failed to delete keystore probe item %s: %s", account, del_err
+                        )
             raise ValueError(f"Unknown operation: {op}")
 
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -319,6 +360,23 @@ def _run_worker_loop() -> int:
                         "Failed to verify key persistence in OS store upon write"
                     )
                 result = {"key": candidate_key, "created": True, "backend_id": backend_id}
+        elif op == "probe":
+            import logging
+
+            logger = logging.getLogger("notebooklm_tools.core.credential_store")
+            backend = get_backend()
+            probe_val = "probe_test"
+            try:
+                backend.set_password(service, account, probe_val)
+                readback = backend.get_password(service, account)
+                if readback != probe_val:
+                    raise BackendUnavailableError("Keystore probe verification failed")
+                result = True
+            finally:
+                try:
+                    backend.delete_password(service, account)
+                except Exception as del_err:
+                    logger.warning("Failed to delete keystore probe item %s: %s", account, del_err)
         else:
             raise ValueError(f"Unknown operation: {op}")
 

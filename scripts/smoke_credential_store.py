@@ -518,18 +518,36 @@ def main() -> int:
 
     reset_config()
 
+    refusal_only = False
     all_passed = True
     try:
-        if not step1_lifecycle(temp_dir, args.service_name):
-            all_passed = False
-        if not step2_large_payload(temp_dir, args.service_name):
-            all_passed = False
-        if not step3_concurrent_processes(temp_dir, args.service_name):
-            all_passed = False
-        if not step4_unavailable_handling(temp_dir, args.service_name):
-            all_passed = False
-        if not step5_cleanup(temp_dir, args.service_name):
-            all_passed = False
+        from notebooklm_tools.core.credential_store import CredentialStore
+
+        preflight_store = CredentialStore(storage_dir=temp_dir, service_name=args.service_name)
+        if not preflight_store.is_available():
+            refusal_only = True
+            print(
+                "\n[INFO] Real keystore is unavailable in this environment (headless/SSH session)."
+            )
+            print("Steps 1-3 are marked [SKIPPED]; testing Step 4 refusal path.")
+            print("  [SKIPPED] Step 1: Migration lifecycle & secret persistence")
+            print("  [SKIPPED] Step 2: Large payload preservation")
+            print("  [SKIPPED] Step 3: Concurrent process safety")
+            if not step4_unavailable_handling(temp_dir, args.service_name):
+                all_passed = False
+            if not step5_cleanup(temp_dir, args.service_name):
+                all_passed = False
+        else:
+            if not step1_lifecycle(temp_dir, args.service_name):
+                all_passed = False
+            if not step2_large_payload(temp_dir, args.service_name):
+                all_passed = False
+            if not step3_concurrent_processes(temp_dir, args.service_name):
+                all_passed = False
+            if not step4_unavailable_handling(temp_dir, args.service_name):
+                all_passed = False
+            if not step5_cleanup(temp_dir, args.service_name):
+                all_passed = False
     except Exception as exc:
         log_fail(f"Unhandled exception during smoke tests: {exc}")
         import traceback
@@ -549,7 +567,10 @@ def main() -> int:
 
     print("\n================================================================")
     if all_passed:
-        print("RESULT: ALL 5 SMOKE TESTS PASSED [OK]")
+        if refusal_only:
+            print("RESULT: PASS (refusal path only)")
+        else:
+            print("RESULT: ALL 5 SMOKE TESTS PASSED [OK]")
     else:
         print("RESULT: SMOKE TESTS FAILED [FAIL]")
     print("================================================================")

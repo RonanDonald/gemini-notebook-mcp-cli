@@ -182,6 +182,17 @@ def _check_authentication(verbose: bool) -> bool:
     try:
         storage_status = get_storage_status(default_profile)
         console.print(f"  Storage mode: [cyan]{storage_status['mode']}[/cyan]")
+
+        from notebooklm_tools.core.credential_store import CredentialStore
+
+        store = CredentialStore()
+        if storage_status["mode"] == "protected":
+            console.print("  Keystore: active (protected mode)")
+        elif store.is_available():
+            console.print("  Keystore: available (run 'nlm auth storage set protected' to protect)")
+        else:
+            console.print("  Keystore: unavailable or locked (keeping file mode)")
+
         if storage_status.get("has_conflict"):
             console.print(
                 f"  Conflict: [bold red]yes ({storage_status.get('conflict_details')})[/bold red]"

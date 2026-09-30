@@ -28,12 +28,17 @@ def _isolate_storage(monkeypatch, tmp_path, request):
             reset_config()
         return
 
+    from notebooklm_tools.mcp.tools._utils import reset_mcp_probe_state
+    from notebooklm_tools.utils.config import reset_config
+
+    reset_mcp_probe_state()
     monkeypatch.setenv("NOTEBOOKLM_MCP_CLI_PATH", str(tmp_path / "storage"))
     reset_config()
     try:
         yield
     finally:
         reset_config()
+        reset_mcp_probe_state()
 
 
 @pytest.fixture(autouse=True)

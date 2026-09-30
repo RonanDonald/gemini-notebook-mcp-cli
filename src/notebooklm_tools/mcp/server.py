@@ -27,6 +27,8 @@ from starlette.responses import JSONResponse
 
 from notebooklm_tools import __version__
 
+from .tools._utils import start_mcp_background_probe
+
 _FALSY = frozenset({"false", "0", "no", "off"})
 
 
@@ -116,6 +118,9 @@ def _register_tools() -> None:
 
 # Register tools on import
 _register_tools()
+
+# Start background probe for storage awareness notice
+start_mcp_background_probe()
 
 
 def main() -> None:

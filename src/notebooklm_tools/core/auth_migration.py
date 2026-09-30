@@ -436,7 +436,8 @@ def migrate_profile_to_protected(profile_name: str) -> dict[str, Any]:
     if not store.is_available():
         raise BackendUnavailableError(
             "Cannot enable protected mode: OS credential store is unavailable or locked.\n"
-            "This is typical for headless servers, SSH sessions, cron jobs, and Docker containers."
+            "Remote/SSH sessions can't use the keychain (Credential Manager on Windows, Keychain on macOS). "
+            "Run this from the desktop, or keep this profile in file mode. Your current setup keeps working."
         )
 
     from notebooklm_tools.core.credential_store import get_profile_lock
@@ -593,6 +594,11 @@ def migrate_profile_to_protected(profile_name: str) -> dict[str, Any]:
 
             shutil.rmtree(quarantine_dir, ignore_errors=True)
             clear_operation_marker(profile_name)
+
+            from notebooklm_tools.core.notices import cache_probe_result, record_protect_answer
+
+            cache_probe_result(True)
+            record_protect_answer(profile_name, "yes")
 
             return {
                 "profile": profile_name,

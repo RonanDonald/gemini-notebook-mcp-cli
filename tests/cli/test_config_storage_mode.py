@@ -86,7 +86,7 @@ def test_auth_storage_set_protected_refuses_when_pending_op_exists():
     assert "pending" in res.output.lower() or "unfinished" in res.output.lower()
 
 
-def test_auth_storage_set_protected_cli():
+def test_auth_storage_set_protected_cli(fake_credential_store):
     """nlm auth storage set protected switches mode to protected."""
     res = runner.invoke(app, ["auth", "storage", "set", "protected", "--profile", "test_prof"])
     assert res.exit_code == 0

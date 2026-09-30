@@ -198,6 +198,64 @@ def _print_auth_valid(profile: Any, notebook_count: int | None) -> None:
         console.print(f"  Account: {profile.email}")
 
 
+def _maybe_prompt_protect_mode(profile: str) -> None:
+    """Prompt the user to protect credentials after a successful login if eligible.
+
+    Shared across wizard and login via notices.json (asks once, defaults to No).
+    """
+    import sys
+
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return
+
+    from notebooklm_tools.core.credential_store import CredentialStore
+    from notebooklm_tools.core.notices import (
+        get_protect_answer,
+        record_protect_answer,
+    )
+    from notebooklm_tools.services.auth_storage import (
+        find_plain_backup_files,
+        remove_plain_backup_files,
+        set_storage_mode,
+    )
+
+    if get_protect_answer(profile) is not None:
+        return
+
+    store = CredentialStore()
+    if not store.should_offer_protection(profile_name=profile):
+        return
+
+    console.print()
+    protect = typer.confirm(
+        f"Protect '{profile}' credentials in the OS keychain?",
+        default=False,
+    )
+    record_protect_answer(profile, "yes" if protect else "no")
+
+    if protect:
+        try:
+            set_storage_mode(mode="protected", profile_name=profile)
+            console.print(f"[green]✓[/green] Profile '{profile}' is now protected.")
+            if sys.platform == "darwin":
+                console.print("[dim]Usually no popup. If one appears, click Always Allow.[/dim]")
+
+            candidates = find_plain_backup_files(profile)
+            if candidates:
+                console.print(f"\nFound {len(candidates)} older plaintext backup file(s):")
+                for c in candidates:
+                    console.print(f"  - {c}")
+                confirm_del = typer.confirm(
+                    f"Delete these {len(candidates)} old plain copies?",
+                    default=False,
+                )
+                if confirm_del:
+                    removed = remove_plain_backup_files(candidates)
+                    console.print(f"Removed {len(removed)} old plain copies.")
+        except Exception as exc:
+            console.print(f"[yellow]Could not enable protected mode:[/yellow] {exc}")
+
+
 @login_app.callback(invoke_without_command=True)
 def login_callback(
     ctx: typer.Context,
@@ -598,6 +656,7 @@ def login_callback(
         if email:
             console.print(f"  Account: {email}")
         console.print(f"  Credentials saved to: {auth.profile_dir}")
+        _maybe_prompt_protect_mode(profile)
 
     except AccountMismatchError as e:
         if provider == "builtin" and not force:
@@ -667,6 +726,7 @@ def login_callback(
                 if email:
                     console.print(f"  Account: {email}")
                 console.print(f"  Credentials saved to: {auth.profile_dir}")
+                _maybe_prompt_protect_mode(profile)
             except NLMError as retry_err:
                 console.print(f"\n[red]Error on retry:[/red] {retry_err.message}")
                 if retry_err.hint:
@@ -928,6 +988,8 @@ def storage_set(
     json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON"),
 ) -> None:
     """Set credential storage mode for a profile."""
+    import sys
+
     from notebooklm_tools.cli.formatters import print_json
     from notebooklm_tools.services.auth_storage import set_storage_mode
     from notebooklm_tools.services.errors import ServiceError, ValidationError
@@ -939,6 +1001,28 @@ def storage_set(
             print_json(res)
         else:
             console.print(f"[green]✓[/green] {res['message']}")
+            if mode == "protected":
+                if sys.platform == "darwin":
+                    console.print(
+                        "[dim]Usually no popup. If one appears, click Always Allow.[/dim]"
+                    )
+                from notebooklm_tools.services.auth_storage import (
+                    find_plain_backup_files,
+                    remove_plain_backup_files,
+                )
+
+                candidates = find_plain_backup_files(res["profile"])
+                if candidates:
+                    console.print(f"\nFound {len(candidates)} older plaintext backup file(s):")
+                    for c in candidates:
+                        console.print(f"  - {c}")
+                    confirm_del = typer.confirm(
+                        f"Delete these {len(candidates)} old plain copies?",
+                        default=False,
+                    )
+                    if confirm_del:
+                        removed = remove_plain_backup_files(candidates)
+                        console.print(f"Removed {len(removed)} old plain copies.")
     except (ServiceError, ValidationError) as e:
         msg = getattr(e, "user_message", str(e))
         if json_output:
@@ -1202,6 +1286,9 @@ def cli_main() -> None:
 
     try:
         app()
+        from notebooklm_tools.cli.utils import print_storage_mode_notification
+
+        print_storage_mode_notification()
     except Exception as e:
         # Import here to avoid circular dependencies
         from notebooklm_tools.core.errors import ClientAuthenticationError

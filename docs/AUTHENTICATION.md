@@ -374,20 +374,24 @@ This decrypts the credentials and writes readable JSON files with `0600` permiss
 
 ### macOS "Always Allow" Prompt
 
-The first time `nlm` or the MCP server accesses the macOS Keychain, macOS displays a security prompt asking for permission to access the item:
+Usually, no prompt appears during normal terminal operations. However, macOS prompts for permission when a different Python binary attempts to read an item created by another binary:
 
-1. Click **Always Allow** (not "Allow").
-2. This grants permission for Python and `nlm` to retrieve the key silently during normal operations, MCP tool calls, and background token refreshes.
-3. If you upgrade Python (such as when Homebrew or `uv` installs a new Python release with a different binary path or signature), macOS treats it as a new application and displays the prompt once more. Click **Always Allow** again.
+1. **Desktop extension users**: `desktop-extension/manifest.json` invokes `python3` from `PATH` (`"command": "python3"`), which uses whatever system or Homebrew Python is first on your `PATH`. Because this is a different Python binary from the isolated environment created by `uv tool install`, macOS will display the Keychain access prompt once when the desktop extension runs. Click **Always Allow** (not "Allow").
+2. **Python upgrades**: If you upgrade Python (such as when Homebrew or `uv` installs a new Python release with a different binary path or signature), macOS detects the new binary signature and displays the prompt once more. Click **Always Allow** again.
+3. Once **Always Allow** is clicked for each binary, macOS silently grants access for all future operations, MCP tool calls, and background token refreshes.
 
 ### Where Protected Mode Cannot Work
 
-Protected mode requires an active, interactive desktop session with an unlocked OS keystore. It cannot work in:
+Protected mode requires an active, interactive desktop session with an unlocked OS keystore. Remote and headless sessions cannot use the keychain (Credential Manager on Windows, Keychain on macOS). Specifically, it cannot work in:
 - **Headless Linux servers, Docker containers, or cron jobs** without a D-Bus session bus.
 - **Windows SSH sessions, Windows services, or Scheduled Tasks** set to "Run whether user is logged on or not" (Windows error 1312: Windows Credential Manager requires an interactive logon session).
-- **macOS prior to user login** after a system reboot (the login keychain remains locked until you log in at the GUI).
+- **macOS over SSH sessions** or prior to user login after a reboot (the macOS Keychain is locked or unavailable over remote SSH sessions).
 
-If you run `nlm auth storage set protected` in an unsupported environment, it safely refuses with a clear error message, and your existing setup continues working in file mode. Keep automated, remote, and server profiles in file mode.
+If you run `nlm auth storage set protected` in an unsupported environment, it safely refuses with a clear error message:
+> *Cannot enable protected mode: OS credential store is unavailable or locked.*
+> *Remote/SSH sessions can't use the keychain (Credential Manager on Windows, Keychain on macOS). Run this from the desktop, or keep this profile in file mode. Your current setup keeps working.*
+
+Your existing setup continues working in file mode. Keep automated, remote, and server profiles in file mode.
 
 ### Scheduled Refresh
 

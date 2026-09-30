@@ -188,15 +188,15 @@ the normal Claude Desktop connection.)
 
 ### Symptoms
 - `BackendUnavailableError: Cannot enable protected mode: OS credential store is unavailable or locked`
-- On macOS: repeated authorization popups asking for Keychain access.
-- On Windows: failure over SSH or non-interactive services with error 1312 (`ERROR_NO_SUCH_LOGON_SESSION`).
+- On macOS: authorization popup asking for Keychain access when running the desktop extension.
+- On Windows/macOS: refusal over SSH or remote non-interactive sessions.
 - On Linux: `D-Bus connection refused` or keystore locked on headless servers or Docker containers.
 - Downgrade error: older versions of `notebooklm-mcp-cli` cannot read `credentials.enc`.
 
 ### Causes & Fixes
-- **macOS "Always Allow":** When macOS prompts for Keychain access, click **Always Allow**. If Python is upgraded (e.g. via Homebrew or uv), macOS detects a new binary signature and shows the prompt once again; click **Always Allow** again.
-- **Headless Linux / Docker / SSH:** Protected mode requires an interactive desktop session with an accessible secret service daemon. For headless machines or remote servers, keep the profile in file mode (`nlm auth storage set file`).
-- **Windows SSH Sessions:** Windows Credential Manager cannot be reached from an SSH logon session (error 1312). Configure or switch the profile to file mode (`nlm auth storage set file`).
+- **macOS "Always Allow" & Desktop Extension:** Usually, no prompt appears during normal terminal operations. However, `desktop-extension/manifest.json` invokes `python3` from `PATH` (`"command": "python3"`), which uses whatever system or Homebrew Python is first on `PATH`. Because this is a different Python binary from the `uv tool` installation, macOS prompts for Keychain access once. Click **Always Allow**. Likewise, if Python is upgraded (e.g. via Homebrew or uv), click **Always Allow** once.
+- **Remote / SSH Sessions (macOS and Windows):** Remote/SSH sessions cannot use the OS keychain (Credential Manager on Windows, Keychain on macOS). When attempting migration over SSH, `nlm auth storage set protected` safely refuses. Run from the desktop session, or keep the profile in file mode.
+- **Headless Linux / Docker:** Protected mode requires an interactive desktop session with an accessible secret service daemon (D-Bus). For headless machines, servers, or Docker containers, keep the profile in file mode (`nlm auth storage set file`).
 - **Downgrading to Older Versions:** Before installing an older version of `notebooklm-mcp-cli`, convert any protected profile back to file mode using `nlm auth storage set file --profile <name>`.
 
 ---

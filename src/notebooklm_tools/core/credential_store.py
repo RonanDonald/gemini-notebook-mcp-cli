@@ -671,12 +671,68 @@ class CredentialStore:
             return None
 
     def is_available(self) -> bool:
-        """Check if the OS credential backend is available without hanging."""
+        """Check if the OS credential backend is available via a fresh real probe (no cache).
+
+        Used by explicit actions: set protected, resolve, refresh preflight, doctor.
+        Executes a throwaway write-read-delete probe (__nlm_probe__<random>) under bounded timeout.
+        """
         try:
             backend_id = self._worker.identify()
-            return bool(backend_id and backend_id != "unsupported")
+            if not backend_id or backend_id == "unsupported":
+                return False
         except Exception:
             return False
+
+        probe_account = f"__nlm_probe__{secrets.token_hex(6)}"
+        try:
+            return bool(self._worker.probe(self._service_name, probe_account))
+        except Exception:
+            return False
+        finally:
+            with contextlib.suppress(Exception):
+                self._worker.delete_password(self._service_name, probe_account)
+
+    def should_offer_protection(self, profile_name: str | None = None) -> bool:
+        """Determine whether to invite the user to enable Protected mode.
+
+        Used only by invites/notices: CLI line, MCP notice, login prompt, wizard, server_info.
+        Order of evaluation:
+        1. Cheap session hints (returns False immediately on SSH, container, headless Linux).
+        2. If profile specified: already answered or already protected -> returns False.
+        3. Cached keystore probe (30-day TTL). If fresh result exists, returns that.
+        4. Real probe at most once per install: runs probe once and caches result in notices.json.
+        """
+        from notebooklm_tools.core.credential_backend_worker import is_definitely_non_desktop
+        from notebooklm_tools.core.notices import (
+            cache_probe_result,
+            get_cached_probe_result,
+            get_protect_answer,
+        )
+        from notebooklm_tools.utils.config import get_auth_storage_mode
+
+        # 1. Cheap session hints
+        if is_definitely_non_desktop():
+            return False
+
+        # 2. Profile state checks
+        if profile_name:
+            if get_protect_answer(profile_name) is not None:
+                return False
+            try:
+                if get_auth_storage_mode(profile_name) != "file":
+                    return False
+            except Exception:
+                return False
+
+        # 3. Cached probe result (30 days)
+        cached = get_cached_probe_result()
+        if cached is not None:
+            return cached
+
+        # 4. Real probe at most once per install
+        available = self.is_available()
+        cache_probe_result(available)
+        return available
 
     def has_key(self, profile_name: str) -> bool:
         """Check if an encryption key exists in the keystore for the given profile."""
