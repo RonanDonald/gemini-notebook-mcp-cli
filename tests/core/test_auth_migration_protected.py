@@ -988,3 +988,44 @@ def test_migrate_legacy_profile_with_metadata_csrf_difference(tmp_path):
     assert creds["csrf_token"] == "csrf-META"
     assert creds["session_id"] == "sess-META"
     assert creds["cookies"] == cookies
+
+
+def test_set_protected_refuses_when_backend_unavailable(tmp_path, monkeypatch):
+    """When OS store is unavailable (e.g. headless Linux, Windows SSH error 1312), set protected refuses and setup keeps working."""
+    from typer.testing import CliRunner
+
+    from notebooklm_tools.cli.main import app
+
+    prof_dir = tmp_path / "profiles" / "unavail_prof"
+    prof_dir.mkdir(parents=True)
+    cookies_path = prof_dir / "cookies.json"
+    cookies_path.write_text(json.dumps({"SID": "unavail_sid"}), encoding="utf-8")
+    (prof_dir / "metadata.json").write_text(
+        json.dumps({"email": "u@example.com"}), encoding="utf-8"
+    )
+
+    # Simulate unavailable OS store backend (e.g. headless Linux without D-Bus, Windows SSH, locked keychain)
+    monkeypatch.setattr(CredentialStore, "is_available", lambda self: False)
+
+    # 1. Service layer refusal:
+    with pytest.raises(
+        ServiceError,
+        match="Cannot enable protected mode: OS credential store is unavailable or locked",
+    ):
+        set_storage_mode("protected", profile_name="unavail_prof")
+
+    # Verify current file-mode setup keeps working untouched:
+    assert get_auth_storage_mode("unavail_prof") == "file"
+    assert cookies_path.exists()
+    assert not (prof_dir / "credentials.enc").exists()
+
+    # 2. CLI layer refusal:
+    runner = CliRunner()
+    result = runner.invoke(
+        app, ["auth", "storage", "set", "protected", "--profile", "unavail_prof"]
+    )
+    assert result.exit_code != 0
+    assert "OS credential store is unavailable or" in result.output
+    # Mode is still file
+    assert get_auth_storage_mode("unavail_prof") == "file"
+    assert cookies_path.exists()

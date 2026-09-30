@@ -169,6 +169,7 @@ This is a security-conscious codebase. Keep these in mind:
 - **Validate URLs.** Base URLs must be HTTPS and on the Google domain allowlist.
 - **File permissions.** Auth files and debug output should use restrictive permissions (`0o600` / `0o700`)
 - **No command injection.** Never pass user input to shell commands unsanitized.
+- **Credential store testing.** Unit and integration tests for authentication and credential storage must always use `fake_credential_store`, `tmp_path`, and synthetic storage paths. Never read, write, or mutate real macOS Keychains, Windows Credential Manager, or the developer's real `~/.notebooklm-mcp-cli` directory. Real-keystore tests require explicit opt-in (`ALLOW_REAL_KEYSTORE=1`) and must use unique test-scoped service names with guaranteed cleanup.
 
 To report a security vulnerability, please email the maintainer directly. Don't open a public issue.
 

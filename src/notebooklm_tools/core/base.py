@@ -1465,21 +1465,15 @@ class BaseClient:
             logger.debug("Headless refresh disabled via NOTEBOOKLM_DISABLE_HEADLESS_REFRESH")
             return False
         try:
-            import inspect
-
             from notebooklm_tools.utils.auth_browser import run_headless_auth
             from notebooklm_tools.utils.config import get_config
 
             profile_name = self._profile_name or get_config().auth.default_profile
-            sig = inspect.signature(run_headless_auth)
-            if "expected_revision" in sig.parameters:
-                tokens = run_headless_auth(
-                    profile_name=profile_name,
-                    expected_revision=starting_rev,
-                    force=False,
-                )
-            else:
-                tokens = run_headless_auth(profile_name=profile_name)
+            tokens = run_headless_auth(
+                profile_name=profile_name,
+                expected_revision=starting_rev,
+                force=False,
+            )
             if tokens:
                 with self._state_lock:
                     self.cookies = tokens.cookies

@@ -169,7 +169,15 @@ nlm login profile list              # List all profiles with email addresses
 nlm login profile delete <name>     # Delete a profile
 nlm login profile rename <old> <new> # Rename a profile
 nlm auth refresh                    # Non-interactive headless refresh (schedulers/unattended)
+nlm auth storage status             # Check credential storage mode (file or protected)
+nlm auth storage set protected      # Encrypt credentials using OS credential store
+nlm auth storage set file           # Decrypt credentials back to plain files (downgrade prep)
+nlm auth storage resolve file       # Resolve conflict: keep plain files, discard encrypted
+nlm auth storage resolve protected  # Resolve conflict: keep encrypted, discard plain files
+nlm auth storage relocate           # Re-bind credentials after moving storage directory
 ````
+
+> **Agent Note**: Document and support `nlm auth storage` when diagnosing auth issues or when requested by the user, but do not proactively nag or prompt users to switch storage modes.
 
 **Multi-Profile Support**: Each profile gets its own isolated browser session (supports Chrome, Arc, Dia, Comet, Brave, Edge, Chromium, Firefox, and more), so you can be logged into multiple Google accounts simultaneously.
 

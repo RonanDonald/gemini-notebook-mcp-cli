@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+> 🔒 **New: Protected login storage (recommended)**
+> Your saved Google login can now be encrypted, with its key kept in your computer's keychain instead of a plain file. We highly recommend everyone switch on a personal computer:
+>
+>     nlm auth storage set protected
+>
+> Optional: nothing changes unless you turn it on. Servers, cron, Docker and SSH setups can keep the plain file.
+> [How it works](docs/AUTHENTICATION.md#protected-storage)
+
+### Added
+
+- **Protected mode credential storage (`nlm auth storage`)** — Secure your saved Google login on personal computers by encrypting credentials at rest using AES-256-GCM (`credentials.enc`) with the encryption key stored in your operating system's native keystore (macOS Keychain, Windows Credential Manager, Linux SecretService).
+  - Optional: File mode remains the default, and upgrading changes nothing until enabled.
+  - Subcommands: `nlm auth storage status`, `set protected|file`, `resolve file|protected`, and `relocate`.
+  - Conflict detection and interactive resolution for divergent file vs protected credentials.
+  - Fast MCP hot-path (<0.05 ms, 0 keystore spawns) with atomic in-process caching and revision checks.
+  - Safe multi-process token rotation with single-flight reloads and compare-and-save semantics.
+
+### Changed
+
+- **Token rotation rate limiting** — Rotation cooldown now tracks per-profile auth-state paths rather than sharing a global unmanaged state file.
+- **Environment cookies are ephemeral** — When `NOTEBOOKLM_COOKIES` is set, credentials are used for the active process only. They are never written to profile caches or OS keystores, and cannot trigger or overwrite saved-profile headless recovery.
+
+### Downgrade Warning
+
+- **Downgrading to older versions:** Older versions of `notebooklm-mcp-cli` do not understand `credentials.enc`. Before downgrading to a version prior to this release, run `nlm auth storage set file` on every protected profile to restore standard JSON files.
+
 ## [0.13.0] - 2026-09-27
 
 Setup is now one command. `nlm setup` finds the AI tools on your machine and

@@ -18,6 +18,8 @@ nlm research start "query" --notebook-id <id>  # Discover sources
 nlm research start "query" --title "New Research"  # Create destination notebook
 nlm usage                    # Check rolling + weekly plan usage and reset times
 nlm usage --json             # Machine-readable usage percentages and timestamps
+nlm auth storage status      # Check credential storage mode (file or protected)
+nlm auth storage set protected # Encrypt stored credentials (OS credential store)
 ```
 
 ### Critical Rules

@@ -184,6 +184,23 @@ the normal Claude Desktop connection.)
 
 ---
 
+## 8. Protected Mode & Keystore Environments
+
+### Symptoms
+- `BackendUnavailableError: Cannot enable protected mode: OS credential store is unavailable or locked`
+- On macOS: repeated authorization popups asking for Keychain access.
+- On Windows: failure over SSH or non-interactive services with error 1312 (`ERROR_NO_SUCH_LOGON_SESSION`).
+- On Linux: `D-Bus connection refused` or keystore locked on headless servers or Docker containers.
+- Downgrade error: older versions of `notebooklm-mcp-cli` cannot read `credentials.enc`.
+
+### Causes & Fixes
+- **macOS "Always Allow":** When macOS prompts for Keychain access, click **Always Allow**. If Python is upgraded (e.g. via Homebrew or uv), macOS detects a new binary signature and shows the prompt once again; click **Always Allow** again.
+- **Headless Linux / Docker / SSH:** Protected mode requires an interactive desktop session with an accessible secret service daemon. For headless machines or remote servers, keep the profile in file mode (`nlm auth storage set file`).
+- **Windows SSH Sessions:** Windows Credential Manager cannot be reached from an SSH logon session (error 1312). Configure or switch the profile to file mode (`nlm auth storage set file`).
+- **Downgrading to Older Versions:** Before installing an older version of `notebooklm-mcp-cli`, convert any protected profile back to file mode using `nlm auth storage set file --profile <name>`.
+
+---
+
 ## Reporting Issues
 
 When reporting issues, include:
