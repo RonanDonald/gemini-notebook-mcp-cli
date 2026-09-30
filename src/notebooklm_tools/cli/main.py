@@ -324,6 +324,21 @@ def login_callback(
         console.print("[dim]Supported values: builtin, openclaw[/dim]")
         raise typer.Exit(1)
 
+    from notebooklm_tools.utils.config import get_auth_storage_mode
+
+    if get_auth_storage_mode(profile) == "protected":
+        from notebooklm_tools.core.credential_store import CredentialStore
+
+        store = CredentialStore()
+        if not store.is_available():
+            console.print(
+                f"[red]Error:[/red] Cannot access credentials for profile '{profile}': "
+                "OS credential store is locked or unavailable.\n"
+                "Unlock your keychain / run this from your desktop session and retry. "
+                f"To stop using Protected mode for this profile, run 'nlm auth storage set file --profile {profile}' from your desktop session."
+            )
+            raise typer.Exit(1)
+
     # --clear switches accounts, so it must reach the browser even when the
     # current session still validates; otherwise the early return skips the
     # profile wipe entirely (issue #330).

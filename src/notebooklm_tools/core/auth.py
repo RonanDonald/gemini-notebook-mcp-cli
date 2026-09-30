@@ -36,6 +36,7 @@ class AuthTokens:
     build_label: str = ""  # Optional - auto-extracted from page (cfb2h key)
     base_host: str = ""  # Optional - host the browser was signed in on (issue #269)
     extracted_at: float = 0.0
+    revision: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -45,6 +46,7 @@ class AuthTokens:
             "build_label": self.build_label,
             "base_host": self.base_host,
             "extracted_at": self.extracted_at,
+            "revision": self.revision,
         }
 
     @classmethod
@@ -56,6 +58,7 @@ class AuthTokens:
             build_label=data.get("build_label", ""),
             base_host=data.get("base_host", ""),
             extracted_at=data.get("extracted_at", 0),
+            revision=data.get("revision"),
         )
 
     def is_expired(self, max_age_hours: float = 168) -> bool:
@@ -120,6 +123,7 @@ def load_cached_tokens(profile_name: str | None = None) -> AuthTokens | None:
                 extracted_at=(
                     profile.last_validated.timestamp() if profile.last_validated else time.time()
                 ),
+                revision=getattr(profile, "revision", None),
             )
         except Exception as e:
             from notebooklm_tools.utils.config import get_auth_storage_mode
@@ -194,7 +198,9 @@ def save_tokens_to_cache(
     tokens: AuthTokens,
     silent: bool = False,
     profile_name: str | None = None,
-) -> None:
+    expected_revision: str | None = None,
+    force: bool = True,
+) -> str | None:
     """Save tokens to a profile and mirror the configured default to auth.json in file mode.
 
     Takes the profile lock first to serialize with concurrent migrations or saves.
@@ -229,17 +235,19 @@ def save_tokens_to_cache(
             _atomic_write_json(root_cache, root_data)
 
         manager = get_auth_manager(target_profile)
-        manager.save_profile(
+        saved_profile = manager.save_profile(
             cookies=tokens.cookies,
             csrf_token=tokens.csrf_token or None,
             session_id=tokens.session_id or None,
             build_label=tokens.build_label or None,
             base_host=tokens.base_host or None,
-            force=True,
+            force=force,
+            expected_revision=expected_revision,
         )
 
     if not silent:
         logger.info(f"Auth tokens cached for profile '{target_profile}'")
+    return getattr(saved_profile, "revision", None)
 
 
 def extract_tokens_via_chrome_devtools() -> AuthTokens | None:
@@ -375,6 +383,7 @@ class Profile:
         build_label: str | None = None,
         base_host: str | None = None,
         browser_backend: str | None = None,
+        revision: str | None = None,
     ) -> None:
         self.name = name
         self.cookies = cookies
@@ -385,6 +394,7 @@ class Profile:
         self.build_label = build_label
         self.base_host = base_host
         self.browser_backend = browser_backend
+        self.revision = revision
 
     def to_dict(self) -> dict:
         """Convert profile to dictionary for serialization."""
@@ -398,6 +408,7 @@ class Profile:
             "base_host": self.base_host,
             "browser_backend": self.browser_backend,
             "last_validated": (self.last_validated.isoformat() if self.last_validated else None),
+            "revision": self.revision,
         }
 
     @classmethod
@@ -424,6 +435,7 @@ class Profile:
             build_label=data.get("build_label"),
             base_host=data.get("base_host"),
             browser_backend=data.get("browser_backend"),
+            revision=data.get("revision"),
         )
 
 
@@ -518,6 +530,11 @@ class AuthManager:
             if payload is None:
                 raise ProfileNotFoundError(self.profile_name)
 
+            from notebooklm_tools.core.credential_store import get_envelope_revision
+
+            enc_path = self.profile_dir / "credentials.enc"
+            rev = get_envelope_revision(enc_path) if enc_path.exists() else None
+
             self._profile = Profile(
                 name=self.profile_name,
                 cookies=payload["cookies"],
@@ -532,6 +549,7 @@ class AuthManager:
                 build_label=metadata.get("build_label"),
                 base_host=metadata.get("base_host"),
                 browser_backend=metadata.get("browser_backend"),
+                revision=rev,
             )
             return self._profile
 
@@ -574,6 +592,7 @@ class AuthManager:
         build_label: str | None = None,
         base_host: str | None = None,
         browser_backend: str | None = None,
+        expected_revision: str | None = None,
     ) -> Profile:
         """Save credentials to the current profile.
 
@@ -584,7 +603,12 @@ class AuthManager:
         from datetime import datetime
 
         from notebooklm_tools.core.auth_migration import get_raw_on_disk_storage_mode
-        from notebooklm_tools.core.credential_store import CredentialStore, get_profile_lock
+        from notebooklm_tools.core.credential_store import (
+            CredentialStore,
+            StaleRevisionError,
+            get_envelope_revision,
+            get_profile_lock,
+        )
         from notebooklm_tools.core.exceptions import AccountMismatchError, AuthenticationError
         from notebooklm_tools.utils.config import safe_mkdir
 
@@ -632,6 +656,7 @@ class AuthManager:
                 preserved_metadata.pop("session_id", None)
 
                 enc_path = self.profile_dir / "credentials.enc"
+                current_revision = get_envelope_revision(enc_path) if enc_path.exists() else None
                 store = CredentialStore()
 
                 # Metadata-only check: if credentials.enc already exists and secrets match exactly,
@@ -651,6 +676,15 @@ class AuthManager:
                         should_write_ciphertext = True
 
                 if should_write_ciphertext:
+                    if (
+                        not force
+                        and expected_revision is not None
+                        and current_revision != expected_revision
+                    ):
+                        raise StaleRevisionError(
+                            self.profile_name, expected_revision, current_revision
+                        )
+
                     secret_payload = {
                         "cookies": cookies,
                         "csrf_token": csrf_token or "",
@@ -676,7 +710,13 @@ class AuthManager:
                 if legacy_auth.exists():
                     with contextlib.suppress(OSError):
                         legacy_auth.unlink()
+
+                final_revision = get_envelope_revision(enc_path) if enc_path.exists() else None
             else:
+                if not force and expected_revision is not None:
+                    # Mode switched from protected to file; expected revision does not exist
+                    raise StaleRevisionError(self.profile_name, expected_revision, None)
+
                 _atomic_write_json(self.cookies_file, cookies)
 
                 metadata = {
@@ -701,6 +741,8 @@ class AuthManager:
                             with contextlib.suppress(OSError):
                                 p.chmod(0o600)
 
+                final_revision = None
+
         self._profile = Profile(
             name=self.profile_name,
             cookies=cookies,
@@ -711,6 +753,7 @@ class AuthManager:
             build_label=build_label,
             base_host=base_host,
             browser_backend=browser_backend,
+            revision=final_revision,
         )
         return self._profile
 

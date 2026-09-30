@@ -132,75 +132,105 @@ def get_client() -> NotebookLMClient:
     """Get or create the API client (thread-safe).
 
     Tries environment variables first, falls back to cached tokens from auth CLI.
+    Keystore reads are performed outside _client_lock to avoid blocking unrelated
+    MCP operations while keeping the hot path sub-millisecond.
     """
     global _client
 
-    with _client_lock:
-        # Profile-change detection (only when env-var auth is not in use).
-        # Runs inside the lock so that _client reads and writes are always
-        # serialised — fixing the double-checked locking race condition (M-2).
-        cookie_header = os.environ.get("NOTEBOOKLM_COOKIES", "")
-        if not cookie_header and _client is not None:
-            try:
-                from notebooklm_tools.utils.config import reset_config
-
-                # Reset config so we read the latest default_profile from disk
-                # in case `nlm login switch` was run in another terminal
-                reset_config()
-                cached = load_cached_tokens()
-
-                # Force re-init if cookies changed (profile switch) OR if disk
-                # tokens are newer than the running client (same-profile re-auth
-                # via `nlm login` — fixes Issue #161).
-                if cached:
-                    cookies_changed = getattr(_client, "cookies", None) != cached.cookies
-                    disk_is_newer = cached.extracted_at > getattr(_client, "_created_at", 0)
-                    if cookies_changed or disk_is_newer:
-                        mcp_logger.info("Authentication change detected, reloading client.")
-                        _client = None  # Reset directly; lock already held
-            except Exception as e:
-                mcp_logger.debug(f"Failed to check auth status: {e}")
-
-        if _client is not None:
+    cookie_header = os.environ.get("NOTEBOOKLM_COOKIES", "")
+    if cookie_header:
+        with _client_lock:
+            if _client is not None and getattr(_client, "_is_env_auth", False):
+                return _client
+            cookies = extract_cookies_from_chrome_export(cookie_header)
+            _client = NotebookLMClient(
+                cookies=cookies,
+                csrf_token="",
+                session_id="",
+                build_label="",
+                base_host="",
+                is_env_auth=True,
+            )
             return _client
 
-        cookie_header = os.environ.get("NOTEBOOKLM_COOKIES", "")
+    # Profile-based authentication
+    from notebooklm_tools.core.credential_store import get_envelope_revision
+    from notebooklm_tools.utils.config import (
+        get_auth_storage_mode,
+        get_config,
+        get_profile_dir,
+        reset_config,
+    )
 
-        # NOTEBOOKLM_CSRF_TOKEN and NOTEBOOKLM_SESSION_ID env vars are deprecated
-        # and no longer read. Both are auto-extracted on first API call. Passing
-        # stale values from env would bypass auto-refresh and cause auth failures.
-        csrf_token = ""
-        session_id = ""
-        build_label = ""
-        base_host = ""
+    with _client_lock:
+        reset_config()
+        default_profile = get_config().auth.default_profile
+        mode = get_auth_storage_mode(default_profile)
 
-        if cookie_header:
-            # Use environment variables
-            cookies = extract_cookies_from_chrome_export(cookie_header)
-        else:
-            # Try cached tokens from auth CLI
-            cached = load_cached_tokens()
-            if cached:
-                cookies = cached.cookies
-                csrf_token = cached.csrf_token
-                session_id = cached.session_id
-                build_label = cached.build_label or ""
-                base_host = cached.base_host or ""
+        if (
+            _client is not None
+            and not getattr(_client, "_is_env_auth", False)
+            and getattr(_client, "_profile_name", None) == default_profile
+        ):
+            if mode == "protected":
+                enc_path = get_profile_dir(default_profile, create=False) / "credentials.enc"
+                if enc_path.exists():
+                    current_rev = get_envelope_revision(enc_path)
+                    if current_rev is not None and current_rev == getattr(
+                        _client, "_auth_revision", None
+                    ):
+                        # Fast hot path: <0.05 ms, 0 spawns
+                        return _client
             else:
-                raise ValueError(
-                    "No authentication found. Either:\n"
-                    "1. Run 'nlm login' to authenticate via Chrome, or\n"
-                    "2. Set NOTEBOOKLM_COOKIES environment variable manually"
-                )
+                # File mode parity
+                try:
+                    cached = load_cached_tokens(default_profile)
+                    if cached:
+                        cookies_changed = getattr(_client, "cookies", None) != cached.cookies
+                        disk_is_newer = cached.extracted_at > getattr(_client, "_created_at", 0)
+                        if not (cookies_changed or disk_is_newer):
+                            return _client
+                except Exception:
+                    pass
 
-        _client = NotebookLMClient(
-            cookies=cookies,
-            csrf_token=csrf_token,
-            session_id=session_id,
-            build_label=build_label,
-            base_host=base_host,
+    # Keystore work OUTSIDE _client_lock
+    cached = load_cached_tokens(default_profile)
+    if not cached:
+        raise ValueError(
+            "No authentication found. Either:\n"
+            "1. Run 'nlm login' to authenticate via Chrome, or\n"
+            "2. Set NOTEBOOKLM_COOKIES environment variable manually"
         )
-    return _client
+
+    new_client = NotebookLMClient(
+        cookies=cached.cookies,
+        csrf_token=cached.csrf_token,
+        session_id=cached.session_id,
+        build_label=cached.build_label or "",
+        base_host=cached.base_host or "",
+        profile_name=default_profile,
+        auth_revision=cached.revision,
+        is_env_auth=False,
+    )
+
+    with _client_lock:
+        # Compare-and-install
+        if (
+            _client is not None
+            and not getattr(_client, "_is_env_auth", False)
+            and getattr(_client, "_profile_name", None) == default_profile
+        ):
+            if mode == "protected":
+                if getattr(_client, "_auth_revision", None) == cached.revision:
+                    return _client
+            else:
+                if not (
+                    getattr(_client, "cookies", None) != cached.cookies
+                    or cached.extracted_at > getattr(_client, "_created_at", 0)
+                ):
+                    return _client
+        _client = new_client
+        return _client
 
 
 def reset_client() -> None:

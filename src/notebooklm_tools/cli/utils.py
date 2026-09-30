@@ -48,7 +48,9 @@ def get_client(profile: str | None = None) -> NotebookLMClient:
     # 1. Environment auth applies only when no profile was explicitly selected.
     env_cookies = os.environ.get("NOTEBOOKLM_COOKIES")
     if env_cookies and not profile:
-        return NotebookLMClient(cookies=extract_cookies_from_string(env_cookies))
+        return NotebookLMClient(
+            cookies=extract_cookies_from_string(env_cookies),
+        )
 
     # 2. Try loading specified profile, or fall back to config default
     if not profile:
@@ -69,6 +71,8 @@ def get_client(profile: str | None = None) -> NotebookLMClient:
             build_label=p.build_label or "",
             base_host=p.base_host or "",
             profile_name=profile,
+            auth_revision=getattr(p, "revision", None),
+            is_env_auth=False,
         )
     except typer.Exit:
         raise

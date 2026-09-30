@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import copy
 import json
 import os
 import secrets
@@ -86,6 +87,46 @@ class LockAcquisitionTimeoutError(CredentialStoreError):
 
 class SymlinkPathRejectedError(CredentialStoreError):
     """Raised when a profile directory or credential file is a symlink."""
+
+
+class StaleRevisionError(CredentialStoreError):
+    """Raised when writing credentials fails because the disk revision has changed."""
+
+    def __init__(
+        self,
+        profile_name: str,
+        expected_revision: str | None,
+        current_revision: str | None,
+    ) -> None:
+        self.profile_name = profile_name
+        self.expected_revision = expected_revision
+        self.current_revision = current_revision
+        super().__init__(
+            f"Cannot save credentials for profile '{profile_name}': "
+            f"expected revision '{expected_revision}', but current revision is '{current_revision}'. "
+            "Credentials were updated concurrently by another process."
+        )
+
+
+def get_envelope_revision(enc_path: Path) -> str | None:
+    """Read the unencrypted revision string from an envelope file without locking or decrypting.
+
+    Returns None if the file does not exist, is not readable, is not a dict, or missing 'revision'.
+    """
+    if not enc_path.exists() or enc_path.is_symlink():
+        return None
+    try:
+        content = enc_path.read_text(encoding="utf-8")
+        data = json.loads(content)
+        if isinstance(data, dict):
+            if data.get("version") != CURRENT_ENVELOPE_VERSION:
+                return None
+            rev = data.get("revision")
+            if isinstance(rev, str) and rev:
+                return rev
+        return None
+    except Exception:
+        return None
 
 
 @dataclass(frozen=True)
@@ -322,9 +363,11 @@ class InMemoryCredentialBackend:
 
     def delete_password(self, service: str, account: str) -> None:
         self._store.pop((service, account), None)
+        clear_credential_cache()
 
     def clear(self) -> None:
         self._store.clear()
+        clear_credential_cache()
 
 
 class KeyringAdapterBackend:
@@ -505,6 +548,18 @@ def get_profile_lock(profile_name: str, storage_dir: Path | None = None) -> Prof
     return ProfileLock(raw_lock, profile_name)
 
 
+_CREDENTIAL_CACHE: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+_CACHE_LOCK = threading.Lock()
+_IN_FLIGHT_LOADS: dict[tuple[str, str, str, str], tuple[threading.Event, list[Any]]] = {}
+_IN_FLIGHT_LOCK = threading.Lock()
+
+
+def clear_credential_cache() -> None:
+    """Clear the in-memory credential cache (for test resets and key deletions)."""
+    with _CACHE_LOCK:
+        _CREDENTIAL_CACHE.clear()
+
+
 class CredentialStore:
     """Core credential store for Protected mode.
 
@@ -518,6 +573,7 @@ class CredentialStore:
         backend: CredentialBackend | None = None,
         worker_client: CredentialWorkerClient | None = None,
         helper_cmd: list[str] | None = None,
+        service_name: str | None = None,
     ) -> None:
         if storage_dir is not None:
             self._storage_dir = storage_dir
@@ -525,6 +581,9 @@ class CredentialStore:
             from notebooklm_tools.utils.config import get_storage_dir
 
             self._storage_dir = get_storage_dir()
+        self._service_name = (
+            service_name or os.environ.get("NOTEBOOKLM_KEYSTORE_SERVICE_NAME") or SERVICE_NAME
+        )
         if worker_client is not None:
             self._worker = worker_client
         elif backend is not None:
@@ -621,7 +680,7 @@ class CredentialStore:
         try:
             identity = get_installation_identity(self._storage_dir, worker=self._worker)
             account_id = f"{identity.installation_id}:{profile_name}"
-            pwd = self._worker.get_password(SERVICE_NAME, account_id)
+            pwd = self._worker.get_password(self._service_name, account_id)
             return pwd is not None
         except Exception:
             return False
@@ -645,6 +704,71 @@ class CredentialStore:
         if not enc_path.exists():
             return None
 
+        # Check operation marker first: pending or interrupted operation must not serve stale cache
+        op_marker = self._read_operation_marker(profile_name)
+        if op_marker is not None:
+            identity = get_installation_identity(self._storage_dir, worker=self._worker)
+            return self._read_credentials_locked(profile_name, enc_path, identity)
+
+        # Check in-memory revision cache
+        revision = get_envelope_revision(enc_path)
+        if revision is not None:
+            identity = get_installation_identity(self._storage_dir, worker=self._worker)
+            cache_key = (
+                str(self._storage_dir.resolve()),
+                identity.installation_id,
+                profile_name,
+                revision,
+            )
+            with _CACHE_LOCK:
+                cached_payload = _CREDENTIAL_CACHE.get(cache_key)
+            if cached_payload is not None:
+                return copy.deepcopy(cached_payload)
+
+            # Single-flight cold loads: only 1 in-flight decrypt per (profile, revision)
+            with _IN_FLIGHT_LOCK:
+                if cache_key in _IN_FLIGHT_LOADS:
+                    event, result_box = _IN_FLIGHT_LOADS[cache_key]
+                    wait = True
+                else:
+                    event = threading.Event()
+                    result_box = []
+                    _IN_FLIGHT_LOADS[cache_key] = (event, result_box)
+                    wait = False
+
+            if wait:
+                event.wait(timeout=LOCK_TIMEOUT_SECONDS)
+                if result_box and isinstance(result_box[0], BaseException):
+                    raise result_box[0]
+                with _CACHE_LOCK:
+                    cached_payload = _CREDENTIAL_CACHE.get(cache_key)
+                if cached_payload is not None:
+                    return copy.deepcopy(cached_payload)
+
+            try:
+                payload = self._read_credentials_locked(profile_name, enc_path, identity)
+                if payload is not None:
+                    with _CACHE_LOCK:
+                        _CREDENTIAL_CACHE[cache_key] = copy.deepcopy(payload)
+                return payload
+            except BaseException as exc:
+                if not wait:
+                    result_box.append(exc)
+                raise
+            finally:
+                if not wait:
+                    with _IN_FLIGHT_LOCK:
+                        _IN_FLIGHT_LOADS.pop(cache_key, None)
+                    event.set()
+
+        # If revision is None (missing or corrupt envelope), fall through to locked read
+        identity = get_installation_identity(self._storage_dir, worker=self._worker)
+        return self._read_credentials_locked(profile_name, enc_path, identity)
+
+    def _read_credentials_locked(
+        self, profile_name: str, enc_path: Path, identity: InstallationIdentity
+    ) -> dict[str, Any] | None:
+        """Perform locked decryption of credentials.enc."""
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
         from filelock import Timeout as FileLockTimeout
 
@@ -678,10 +802,9 @@ class CredentialStore:
                         "Missing required envelope fields (revision, nonce, ciphertext)"
                     )
 
-                identity = get_installation_identity(self._storage_dir, worker=self._worker)
                 account_id = f"{identity.installation_id}:{profile_name}"
 
-                key_b64 = self._worker.get_password(SERVICE_NAME, account_id)
+                key_b64 = self._worker.get_password(self._service_name, account_id)
                 if key_b64 is None:
                     # Check if a deletion operation was in progress (distinguish deletion intent from corruption)
                     op_marker = self._read_operation_marker(profile_name)
@@ -767,7 +890,7 @@ class CredentialStore:
 
                 # Single helper process call: ensures key and verifies backend ID in 1 execution
                 key_b64, created, backend_id = self._worker.ensure_key(
-                    SERVICE_NAME,
+                    self._service_name,
                     account_id,
                     candidate_key=candidate_key_b64,
                     allow_create=not enc_path.exists(),
@@ -850,6 +973,9 @@ class CredentialStore:
 
                 # Clear operation marker upon successful commit
                 self._clear_operation_marker(profile_name)
+
+                # Invalidate in-memory revision cache so next read decrypts and verifies store
+                clear_credential_cache()
         except FileLockTimeout as exc:
             raise LockAcquisitionTimeoutError(
                 f"Timed out acquiring lock for profile '{profile_name}' after {LOCK_TIMEOUT_SECONDS}s"
@@ -875,13 +1001,19 @@ class CredentialStore:
                 self._write_operation_marker(profile_name, operation="delete", phase="preparing")
 
                 account_id = f"{identity.installation_id}:{profile_name}"
-                self._worker.delete_password(SERVICE_NAME, account_id)
+                self._worker.delete_password(self._service_name, account_id)
 
                 if enc_path.exists():
                     enc_path.unlink()
 
                 self._write_operation_marker(profile_name, operation="delete", phase="cleanup")
                 self._clear_operation_marker(profile_name)
+
+                # Clear in-memory revision cache for this profile
+                with _CACHE_LOCK:
+                    to_del = [k for k in _CREDENTIAL_CACHE if k[2] == profile_name]
+                    for k in to_del:
+                        _CREDENTIAL_CACHE.pop(k, None)
         except FileLockTimeout as exc:
             raise LockAcquisitionTimeoutError(
                 f"Timed out acquiring lock for profile '{profile_name}' after {LOCK_TIMEOUT_SECONDS}s"
