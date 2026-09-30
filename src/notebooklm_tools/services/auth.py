@@ -48,6 +48,7 @@ __all__ = [
     "confirm_auth_via_api",
     "credentials_are_usable",
     "diagnose_auth_replay",
+    "ensure_profile_ready",
     "get_active_auth_mtime",
     "get_auth_health_checker",
     "get_cache_path",
@@ -70,6 +71,11 @@ def check_auth(*args, **kwargs):
     observed by callers of this shim.
     """
     return _core_auth.check_auth(*args, **kwargs)
+
+
+def ensure_profile_ready(profile_name: str | None = None) -> None:
+    """Re-export of `notebooklm_tools.core.auth.ensure_profile_ready`."""
+    _core_auth.ensure_profile_ready(profile_name=profile_name)
 
 
 def load_cached_tokens(profile_name: str | None = None):

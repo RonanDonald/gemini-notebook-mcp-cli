@@ -22,6 +22,13 @@ def _isolate_storage(monkeypatch, tmp_path, request):
         return
 
     monkeypatch.setenv("NOTEBOOKLM_MCP_CLI_PATH", str(tmp_path / "storage"))
+    from notebooklm_tools.utils.config import reset_config
+
+    reset_config()
+    try:
+        yield
+    finally:
+        reset_config()
 
 
 @pytest.fixture(autouse=True)

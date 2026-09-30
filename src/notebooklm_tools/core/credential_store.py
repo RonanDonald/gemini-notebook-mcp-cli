@@ -17,16 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from filelock import FileLock
-from filelock import Timeout as FileLockTimeout
 from keyring.backend import KeyringBackend
-
-from notebooklm_tools.utils.config import (
-    ConfigError,
-    get_storage_dir,
-    validate_profile_name,
-)
 
 if TYPE_CHECKING:
     from notebooklm_tools.core.credential_backend_worker import CredentialWorkerClient
@@ -132,14 +123,20 @@ def _read_installation_identity(install_file: Path) -> InstallationIdentity:
     )
 
 
-def get_installation_identity(storage_dir: Path | None = None) -> InstallationIdentity:
+def get_installation_identity(
+    storage_dir: Path | None = None, worker: CredentialWorkerClient | None = None
+) -> InstallationIdentity:
     """Retrieve or generate the stable installation identity."""
     if storage_dir is None:
+        from notebooklm_tools.utils.config import get_storage_dir
+
         storage_dir = get_storage_dir()
 
     install_file = storage_dir / "installation.json"
     if install_file.exists():
         return _read_installation_identity(install_file)
+
+    from filelock import FileLock
 
     storage_dir.mkdir(parents=True, exist_ok=True)
     locks_dir = storage_dir / "locks"
@@ -150,7 +147,7 @@ def get_installation_identity(storage_dir: Path | None = None) -> InstallationId
 
         installation_id = secrets.token_hex(16)
         canonical_root = str(storage_dir.resolve())
-        backend_id = get_current_backend_id()
+        backend_id = worker.identify() if worker is not None else get_current_backend_id()
 
         data = {
             "version": 1,
@@ -180,6 +177,8 @@ def get_installation_identity(storage_dir: Path | None = None) -> InstallationId
 def relocate_installation(storage_dir: Path | None = None) -> InstallationIdentity:
     """Adopt a confirmed moved root by updating canonical_root in installation.json."""
     if storage_dir is None:
+        from notebooklm_tools.utils.config import get_storage_dir
+
         storage_dir = get_storage_dir()
 
     identity = get_installation_identity(storage_dir)
@@ -212,12 +211,18 @@ def relocate_installation(storage_dir: Path | None = None) -> InstallationIdenti
     )
 
 
-def check_installation_identity(storage_dir: Path | None = None) -> InstallationIdentity:
+def check_installation_identity(
+    storage_dir: Path | None = None,
+    worker: CredentialWorkerClient | None = None,
+    expected_backend_id: str | None = None,
+) -> InstallationIdentity:
     """Check installation identity and verify canonical root and backend match."""
     if storage_dir is None:
+        from notebooklm_tools.utils.config import get_storage_dir
+
         storage_dir = get_storage_dir()
 
-    identity = get_installation_identity(storage_dir)
+    identity = get_installation_identity(storage_dir, worker=worker)
     current_root = str(storage_dir.resolve())
     if identity.canonical_root != current_root:
         raise InstallationPathMismatchError(
@@ -225,12 +230,15 @@ def check_installation_identity(storage_dir: Path | None = None) -> Installation
             f"but current root is '{current_root}'. Run 'nlm auth storage relocate' if this was an intentional move."
         )
 
-    # Verify backend identifier if recorded and not running in test with custom factory
-    if (
-        identity.backend_id not in ("unknown", "in_memory", "test_fake")
-        and get_backend_factory() is None
-    ):
-        current_backend = get_current_backend_id()
+    # Verify backend identifier if recorded
+    if identity.backend_id not in ("unknown", "in_memory", "test_fake"):
+        if expected_backend_id is not None:
+            current_backend = expected_backend_id
+        elif worker is not None:
+            current_backend = worker.identify()
+        else:
+            current_backend = get_current_backend_id()
+
         if identity.backend_id != current_backend:
             raise BackendMismatchError(
                 f"Backend mismatch: installation was initialized with '{identity.backend_id}', "
@@ -435,11 +443,8 @@ def get_current_backend_id() -> str:
         if isinstance(active, InMemoryCredentialBackend):
             return "in_memory"
         return "test_fake"
-    try:
-        _, backend_id = _detect_os_backend()
-        return backend_id
-    except Exception:
-        return "unknown"
+    _, backend_id = _detect_os_backend()
+    return backend_id
 
 
 class CredentialStore:
@@ -456,7 +461,12 @@ class CredentialStore:
         worker_client: CredentialWorkerClient | None = None,
         helper_cmd: list[str] | None = None,
     ) -> None:
-        self._storage_dir = storage_dir if storage_dir is not None else get_storage_dir()
+        if storage_dir is not None:
+            self._storage_dir = storage_dir
+        else:
+            from notebooklm_tools.utils.config import get_storage_dir
+
+            self._storage_dir = get_storage_dir()
         if worker_client is not None:
             self._worker = worker_client
         elif backend is not None:
@@ -476,12 +486,16 @@ class CredentialStore:
             )
 
     def _validate_profile(self, profile_name: str) -> None:
+        from notebooklm_tools.utils.config import ConfigError, validate_profile_name
+
         try:
             validate_profile_name(profile_name)
         except ConfigError as exc:
             raise InvalidProfileNameError(str(exc)) from exc
 
-    def _get_profile_lock(self, profile_name: str) -> FileLock:
+    def _get_profile_lock(self, profile_name: str) -> Any:
+        from filelock import FileLock
+
         locks_dir = self._storage_dir / "locks"
         locks_dir.mkdir(parents=True, exist_ok=True)
         lock_path = locks_dir / f"{profile_name}.lock"
@@ -561,6 +575,9 @@ class CredentialStore:
         if not enc_path.exists():
             return None
 
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        from filelock import Timeout as FileLockTimeout
+
         try:
             with self._get_profile_lock(profile_name):
                 file_size = enc_path.stat().st_size
@@ -591,7 +608,7 @@ class CredentialStore:
                         "Missing required envelope fields (revision, nonce, ciphertext)"
                     )
 
-                identity = check_installation_identity(self._storage_dir)
+                identity = get_installation_identity(self._storage_dir, worker=self._worker)
                 account_id = f"{identity.installation_id}:{profile_name}"
 
                 key_b64 = self._worker.get_password(SERVICE_NAME, account_id)
@@ -650,7 +667,13 @@ class CredentialStore:
     def write_credentials(self, profile_name: str, payload: dict[str, Any]) -> None:
         """Encrypt and atomically store credentials for a protected profile."""
         self._validate_profile(profile_name)
-        identity = check_installation_identity(self._storage_dir)
+        identity = get_installation_identity(self._storage_dir, worker=self._worker)
+        current_root = str(self._storage_dir.resolve())
+        if identity.canonical_root != current_root:
+            raise InstallationPathMismatchError(
+                f"Installation directory mismatch: canonical root is '{identity.canonical_root}', "
+                f"but current root is '{current_root}'. Run 'nlm auth storage relocate' if this was an intentional move."
+            )
         profile_dir = self._get_profile_dir(profile_name)
         enc_path = profile_dir / "credentials.enc"
 
@@ -659,6 +682,9 @@ class CredentialStore:
         if enc_path.exists():
             self._check_symlink(enc_path)
 
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        from filelock import Timeout as FileLockTimeout
+
         try:
             with self._get_profile_lock(profile_name):
                 account_id = f"{identity.installation_id}:{profile_name}"
@@ -666,34 +692,30 @@ class CredentialStore:
                 # Write operation marker: preparing
                 self._write_operation_marker(profile_name, operation="write", phase="preparing")
 
-                # Readback first to check if key already exists (reconciliation on retry/recovery)
-                key_b64 = self._worker.get_password(SERVICE_NAME, account_id)
-                if key_b64 is None:
-                    # An existing ciphertext with a missing key must fail; never generate a new key over it!
-                    if enc_path.exists():
-                        raise MissingKeyError(
-                            f"Ciphertext exists for profile '{profile_name}', but encryption key is missing "
-                            "from OS keystore. Will not generate a new key over existing ciphertext."
-                        )
+                candidate_raw_key = secrets.token_bytes(KEY_BYTES)
+                candidate_key_b64 = base64.b64encode(candidate_raw_key).decode("ascii")
 
-                    raw_key = secrets.token_bytes(KEY_BYTES)
-                    key_b64 = base64.b64encode(raw_key).decode("ascii")
+                # Single helper process call: ensures key and verifies backend ID in 1 execution
+                key_b64, created, backend_id = self._worker.ensure_key(
+                    SERVICE_NAME,
+                    account_id,
+                    candidate_key=candidate_key_b64,
+                    allow_create=not enc_path.exists(),
+                )
 
-                    if len(key_b64) > MAX_KEYSTORE_ITEM_LENGTH:
-                        raise KeystoreItemTooLargeError(
-                            f"Key length {len(key_b64)} exceeds maximum keystore limit {MAX_KEYSTORE_ITEM_LENGTH}"
-                        )
+                if (
+                    identity.backend_id not in ("unknown", "in_memory", "test_fake")
+                    and get_backend_factory() is None
+                    and identity.backend_id != backend_id
+                ):
+                    raise BackendMismatchError(
+                        f"Backend mismatch: installation was initialized with '{identity.backend_id}', "
+                        f"but current backend is '{backend_id}'. Silent backend switching is prohibited."
+                    )
 
-                    self._worker.set_password(SERVICE_NAME, account_id, key_b64)
-
-                    # Read back immediately to verify persistence
-                    readback = self._worker.get_password(SERVICE_NAME, account_id)
-                    if readback != key_b64:
-                        raise BackendUnavailableError(
-                            "Failed to verify key persistence in OS store upon write"
-                        )
+                if created:
+                    raw_key = candidate_raw_key
                 else:
-                    # Reuse existing key! Never generate a new key when key already exists
                     try:
                         raw_key = base64.b64decode(key_b64)
                     except Exception as exc:
@@ -766,7 +788,7 @@ class CredentialStore:
     def delete_credentials(self, profile_name: str) -> None:
         """Delete credentials and encryption key for a protected profile."""
         self._validate_profile(profile_name)
-        identity = check_installation_identity(self._storage_dir)
+        identity = check_installation_identity(self._storage_dir, worker=self._worker)
         profile_dir = self._get_profile_dir(profile_name)
         enc_path = profile_dir / "credentials.enc"
 
@@ -774,6 +796,8 @@ class CredentialStore:
             self._check_symlink(profile_dir)
         if enc_path.exists():
             self._check_symlink(enc_path)
+
+        from filelock import Timeout as FileLockTimeout
 
         try:
             with self._get_profile_lock(profile_name):

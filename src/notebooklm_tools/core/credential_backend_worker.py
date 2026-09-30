@@ -87,6 +87,34 @@ class CredentialWorkerClient:
         """Delete a secret with a bounded deadline."""
         self._execute({"op": "delete", "service": service, "account": account})
 
+    def identify(self) -> str:
+        """Identify the active OS keystore backend."""
+        res = self._execute({"op": "identify"})
+        return str(res)
+
+    def ensure_key(
+        self,
+        service: str,
+        account: str,
+        candidate_key: str,
+        allow_create: bool = True,
+    ) -> tuple[str, bool, str]:
+        """Ensure an encryption key exists, creating and verifying it if missing and permitted.
+
+        Returns:
+            Tuple of (key, created, backend_id)
+        """
+        res = self._execute(
+            {
+                "op": "ensure_key",
+                "service": service,
+                "account": account,
+                "candidate_key": candidate_key,
+                "allow_create": allow_create,
+            }
+        )
+        return res["key"], res["created"], res["backend_id"]
+
     def _execute(self, request: dict[str, Any]) -> Any:
         # If an explicit in-memory/in-process backend is provided and subprocess is not requested, execute in-process
         if self._backend is not None and not self._use_subprocess:
@@ -98,11 +126,15 @@ class CredentialWorkerClient:
         import concurrent.futures
 
         op = request["op"]
-        service = request["service"]
-        account = request["account"]
+        service = request.get("service", "")
+        account = request.get("account", "")
 
         def _run() -> Any:
-            if op == "get":
+            if op == "identify":
+                from notebooklm_tools.core.credential_store import get_current_backend_id
+
+                return get_current_backend_id()
+            elif op == "get":
                 return backend.get_password(service, account)
             elif op == "set":
                 backend.set_password(service, account, request["password"])
@@ -110,6 +142,29 @@ class CredentialWorkerClient:
             elif op == "delete":
                 backend.delete_password(service, account)
                 return None
+            elif op == "ensure_key":
+                from notebooklm_tools.core.credential_store import (
+                    BackendUnavailableError,
+                    MissingKeyError,
+                    get_current_backend_id,
+                )
+
+                backend_id = get_current_backend_id()
+                current = backend.get_password(service, account)
+                if current is not None:
+                    return {"key": current, "created": False, "backend_id": backend_id}
+                if not request.get("allow_create", True):
+                    raise MissingKeyError(
+                        f"Encryption key for account '{account}' is missing from OS keystore."
+                    )
+                candidate_key = request["candidate_key"]
+                backend.set_password(service, account, candidate_key)
+                readback = backend.get_password(service, account)
+                if readback != candidate_key:
+                    raise BackendUnavailableError(
+                        "Failed to verify key persistence in OS store upon write"
+                    )
+                return {"key": candidate_key, "created": True, "backend_id": backend_id}
             raise ValueError(f"Unknown operation: {op}")
 
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -184,6 +239,12 @@ class CredentialWorkerClient:
                 )
             if err_type == "KeystoreItemTooLargeError":
                 raise KeystoreItemTooLargeError("Keystore item exceeds maximum allowed length")
+            if err_type == "MissingKeyError":
+                from notebooklm_tools.core.credential_store import MissingKeyError
+
+                raise MissingKeyError(
+                    response.get("error", "Encryption key is missing from OS keystore")
+                )
             if err_type == "BackendUnavailableError":
                 raise BackendUnavailableError("OS credential store is unavailable or locked")
             raise BackendUnavailableError("Credential store operation failed")
@@ -214,19 +275,50 @@ def _run_worker_loop() -> int:
             return 1
         request = json.loads(raw_input)
         op = request.get("op")
-        service = request.get("service")
-        account = request.get("account")
+        service = request.get("service", "")
+        account = request.get("account", "")
 
-        backend = get_backend()
-        result = None
+        result: Any = None
 
-        if op == "get":
+        if op == "identify":
+            from notebooklm_tools.core.credential_store import get_current_backend_id
+
+            result = get_current_backend_id()
+        elif op == "get":
+            backend = get_backend()
             result = backend.get_password(service, account)
         elif op == "set":
+            backend = get_backend()
             password = request.get("password", "")
             backend.set_password(service, account, password)
         elif op == "delete":
+            backend = get_backend()
             backend.delete_password(service, account)
+        elif op == "ensure_key":
+            from notebooklm_tools.core.credential_store import (
+                BackendUnavailableError,
+                MissingKeyError,
+                get_current_backend_id,
+            )
+
+            backend_id = get_current_backend_id()
+            backend = get_backend()
+            current = backend.get_password(service, account)
+            if current is not None:
+                result = {"key": current, "created": False, "backend_id": backend_id}
+            elif not request.get("allow_create", True):
+                raise MissingKeyError(
+                    f"Encryption key for account '{account}' is missing from OS keystore."
+                )
+            else:
+                candidate_key = request["candidate_key"]
+                backend.set_password(service, account, candidate_key)
+                readback = backend.get_password(service, account)
+                if readback != candidate_key:
+                    raise BackendUnavailableError(
+                        "Failed to verify key persistence in OS store upon write"
+                    )
+                result = {"key": candidate_key, "created": True, "backend_id": backend_id}
         else:
             raise ValueError(f"Unknown operation: {op}")
 
@@ -273,6 +365,19 @@ def _run_worker_loop() -> int:
         sys.stdout.flush()
         return 4
     except Exception as exc:
+        if type(exc).__name__ == "MissingKeyError":
+            sys.stdout.write(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": str(exc),
+                        "error_type": "MissingKeyError",
+                    }
+                )
+                + "\n"
+            )
+            sys.stdout.flush()
+            return 5
         sys.stdout.write(
             json.dumps(
                 {

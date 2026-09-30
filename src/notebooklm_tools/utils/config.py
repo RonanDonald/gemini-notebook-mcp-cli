@@ -174,17 +174,19 @@ def get_data_dir() -> Path:
     return get_storage_dir()
 
 
-def get_profiles_dir() -> Path:
+def get_profiles_dir(create: bool = True) -> Path:
     """Get the profiles directory path."""
     profiles_dir = get_storage_dir() / "profiles"
-    safe_mkdir(profiles_dir)
+    if create:
+        safe_mkdir(profiles_dir)
     return profiles_dir
 
 
-def get_profile_dir(profile_name: str = "default") -> Path:
+def get_profile_dir(profile_name: str = "default", create: bool = True) -> Path:
     """Get directory for a specific profile."""
-    profile_dir = get_profiles_dir() / profile_name
-    safe_mkdir(profile_dir, parents=True)
+    profile_dir = get_profiles_dir(create=create) / profile_name
+    if create:
+        safe_mkdir(profile_dir, parents=True)
     return profile_dir
 
 

@@ -104,3 +104,85 @@ def set_storage_mode(mode: str, profile_name: str | None = None) -> StorageSetRe
         status="updated",
         message=f"Storage mode set to 'file' for profile '{resolved_profile}'.",
     )
+
+
+class RenameProfileResult(TypedDict):
+    """Result of renaming an auth profile."""
+
+    old_name: str
+    new_name: str
+    is_default: bool
+    message: str
+
+
+def rename_profile(old_name: str, new_name: str) -> RenameProfileResult:
+    """Rename an authentication profile.
+
+    Validates names, orchestrates profile migration, reads storage-mode.json
+    directly from disk (bypassing NLM_AUTH_STORAGE env var to avoid persisting
+    environment overrides), updates default_profile if needed, and deletes the old profile.
+    """
+    import json
+
+    from notebooklm_tools.core.auth import AuthManager
+    from notebooklm_tools.services.errors import ConflictError, NotFoundError
+    from notebooklm_tools.utils.config import get_profiles_dir, save_config
+
+    try:
+        validate_profile_name(old_name)
+        validate_profile_name(new_name)
+    except ValueError as e:
+        raise ValidationError(str(e)) from e
+
+    old_auth = AuthManager(old_name)
+    if not old_auth.profile_exists():
+        raise NotFoundError(
+            f"Profile '{old_name}' not found", user_message=f"Profile '{old_name}' not found"
+        )
+
+    # Refuse protected profiles until protected rename is implemented
+    old_dir = get_profiles_dir() / old_name
+    if (old_dir / "credentials.enc").exists():
+        raise ServiceError("Renaming protected profiles is coming in a later update.")
+
+    new_auth = AuthManager(new_name)
+    if new_auth.profile_exists():
+        raise ConflictError(
+            f"Profile '{new_name}' already exists",
+            user_message=f"Profile '{new_name}' already exists",
+        )
+
+    # Check if raw mode is protected
+    mode_marker = old_dir / "storage-mode.json"
+    if mode_marker.exists():
+        try:
+            raw_mode = json.loads(mode_marker.read_text(encoding="utf-8"))
+            if isinstance(raw_mode, dict) and raw_mode.get("mode") == "protected":
+                raise ServiceError("Renaming protected profiles is coming in a later update.")
+        except ServiceError:
+            raise
+        except Exception:
+            pass
+
+    # Move profile directory directly to preserve all files and avoid env bleed
+    new_dir = get_profiles_dir() / new_name
+    try:
+        old_dir.rename(new_dir)
+    except OSError:
+        import shutil
+
+        shutil.move(str(old_dir), str(new_dir))
+
+    # Update default_profile if this was the default
+    config = get_config()
+    is_default = config.auth.default_profile == old_name
+    if is_default:
+        config.auth.default_profile = new_name
+        save_config(config)
+
+    return RenameProfileResult(
+        old_name=old_name,
+        new_name=new_name,
+        is_default=is_default,
+        message=f"Renamed profile '{old_name}' to '{new_name}'.",
+    )

@@ -389,20 +389,8 @@ def test_backend_mismatch_blocks_mutation(fake_credential_store):
     data["backend_id"] = "DifferentBackend.Keyring"
     install_file.write_text(json.dumps(data))
 
-    # In test environment with fake_credential_store factory, get_backend_factory() is not None,
-    # but check_installation_identity verifies when factory is cleared or direct check is made
-    from notebooklm_tools.core.credential_store import (
-        get_backend_factory,
-        set_backend_factory,
-    )
-
-    old_factory = get_backend_factory()
-    set_backend_factory(None)
-    try:
-        with pytest.raises(BackendMismatchError):
-            check_installation_identity(storage_dir)
-    finally:
-        set_backend_factory(old_factory)
+    with pytest.raises(BackendMismatchError):
+        check_installation_identity(storage_dir)
 
 
 def test_profile_exists_returns_true_for_credentials_enc_only_task3_routing_expectation():
@@ -417,7 +405,89 @@ def test_profile_exists_returns_true_for_credentials_enc_only_task3_routing_expe
     auth = AuthManager("only_enc_prof")
     assert auth.profile_exists() is True
 
-    # Expectation: Until Task 3 routes load_profile() through CredentialStore,
-    # load_profile() looks for cookies.json and raises AuthenticationError
+    # Expectation: In file mode, load_profile() looks for cookies.json and raises AuthenticationError
     with pytest.raises(AuthenticationError):
         auth.load_profile()
+
+
+def test_unavailable_keystore_surfaces_as_backend_unavailable_not_mismatch():
+    """Locked or unavailable keystore raises BackendUnavailableError, not BackendMismatchError."""
+    from notebooklm_tools.core.credential_backend_worker import CredentialWorkerClient
+    from notebooklm_tools.core.credential_store import BackendUnavailableError
+
+    storage_dir = get_storage_dir()
+    install_file = storage_dir / "installation.json"
+    install_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "installation_id": "test_install_id",
+                "canonical_root": str(storage_dir.resolve()),
+                "backend_id": "SecretService.Keyring",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class UnavailableWorker(CredentialWorkerClient):
+        def __init__(self):
+            pass
+
+        def identify(self) -> str:
+            raise BackendUnavailableError("D-Bus connection refused / keystore locked")
+
+    worker = UnavailableWorker()
+    with pytest.raises(BackendUnavailableError) as exc_info:
+        check_installation_identity(storage_dir, worker=worker)
+
+    assert "keystore locked" in str(exc_info.value) or "unavailable" in str(exc_info.value).lower()
+    assert not isinstance(exc_info.value, BackendMismatchError)
+
+
+def test_moved_root_allows_read_credentials_but_blocks_mutations(fake_credential_store):
+    """Moved root permits non-mutating diagnostic reads, but strictly blocks writes and deletes."""
+    storage_dir = get_storage_dir()
+    store = CredentialStore(storage_dir=storage_dir)
+    payload = {"cookies": {"SID": "valid_cookie"}, "csrf_token": "token123"}
+    store.write_credentials("moved_root_prof", payload)
+
+    # Tamper canonical root to simulate an unconfirmed root move
+    install_file = storage_dir / "installation.json"
+    data = json.loads(install_file.read_text(encoding="utf-8"))
+    data["canonical_root"] = "/previous/moved/path"
+    install_file.write_text(json.dumps(data), encoding="utf-8")
+
+    # Non-mutating read MUST succeed!
+    read_payload = store.read_credentials("moved_root_prof")
+    assert read_payload == payload
+
+    # Mutations MUST be strictly blocked
+    with pytest.raises(InstallationPathMismatchError):
+        store.write_credentials("moved_root_prof", {"cookies": {"SID": "new"}})
+
+    with pytest.raises(InstallationPathMismatchError):
+        store.delete_credentials("moved_root_prof")
+
+
+def test_orphaned_write_preparing_marker_behavior(fake_credential_store):
+    """An orphaned write/preparing marker does not block reading valid ciphertext, and subsequent write clears it."""
+    store = CredentialStore()
+    payload = {"cookies": {"SID": "orig_session"}}
+    store.write_credentials("orphan_prof", payload)
+
+    # Simulate crash during preparing phase of a later write
+    store._write_operation_marker("orphan_prof", operation="write", phase="preparing")
+    assert store._read_operation_marker("orphan_prof") is not None
+
+    # Read succeeds and returns the valid committed ciphertext
+    assert store.read_credentials("orphan_prof") == payload
+
+    # Subsequent write successfully overwrites and clears the orphaned marker
+    new_payload = {"cookies": {"SID": "updated_session"}}
+    store.write_credentials("orphan_prof", new_payload)
+    assert store.read_credentials("orphan_prof") == new_payload
+    assert store._read_operation_marker("orphan_prof") is None
+
+    # Fresh profile with no ciphertext and an orphaned write/preparing marker returns None
+    store._write_operation_marker("empty_orphan_prof", operation="write", phase="preparing")
+    assert store.read_credentials("empty_orphan_prof") is None

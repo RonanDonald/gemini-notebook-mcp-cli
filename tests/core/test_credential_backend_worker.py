@@ -147,8 +147,10 @@ for line in sys.stdin:
     op = req.get("op")
     srv = req.get("service")
     acc = req.get("account")
-    key = f"{{srv}}:{{acc}}"
-    if op == "get":
+    key = str(srv) + ":" + str(acc)
+    if op == "identify":
+        sys.stdout.write(json.dumps({{"ok": True, "result": "fake_test_backend"}}) + "\\n")
+    elif op == "get":
         sys.stdout.write(json.dumps({{"ok": True, "result": store.get(key)}}) + "\\n")
     elif op == "set":
         store[key] = req.get("password")
@@ -160,6 +162,18 @@ for line in sys.stdin:
         with open(db_path, "w", encoding="utf-8") as f:
             json.dump(store, f)
         sys.stdout.write(json.dumps({{"ok": True, "result": None}}) + "\\n")
+    elif op == "ensure_key":
+        existing = store.get(key)
+        if existing is not None:
+            sys.stdout.write(json.dumps({{"ok": True, "result": {{"key": existing, "created": False, "backend_id": "fake_test_backend"}}}}) + "\\n")
+        elif not req.get("allow_create", True):
+            sys.stdout.write(json.dumps({{"ok": False, "error_type": "MissingKeyError", "error": "Missing key"}}) + "\\n")
+        else:
+            cand = req.get("candidate_key")
+            store[key] = cand
+            with open(db_path, "w", encoding="utf-8") as f:
+                json.dump(store, f)
+            sys.stdout.write(json.dumps({{"ok": True, "result": {{"key": cand, "created": True, "backend_id": "fake_test_backend"}}}}) + "\\n")
     sys.stdout.flush()
 """,
         encoding="utf-8",
