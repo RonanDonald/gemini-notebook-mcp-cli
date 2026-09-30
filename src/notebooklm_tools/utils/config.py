@@ -625,10 +625,10 @@ def get_auth_storage_mode(profile_name: str = "default") -> str:
             raise ValueError("Marker is not a JSON object")
         if data.get("version") != 1:
             raise ValueError(f"Unsupported storage-mode version: {data.get('version')}")
-        mode = data.get("mode")
-        if mode not in ("protected", "file"):
-            raise ValueError(f"Invalid mode in marker: {mode}")
-        return str(mode)
+        mode_val = data.get("mode")
+        if mode_val not in ("protected", "file"):
+            raise ValueError(f"Invalid mode in marker: {mode_val}")
+        return str(mode_val)
     except Exception as e:
         raise ValueError(f"Corrupt storage-mode.json in profile '{profile_name}': {e}") from e
 

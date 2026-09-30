@@ -17,7 +17,6 @@ import json
 import subprocess
 import sys
 import threading
-from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -462,14 +461,10 @@ def test_legacy_profile_name_with_spaces_file_mode_and_protected_refusal(fake_cr
     assert cli_status.exit_code == 0
     assert "my new work" in cli_status.stdout
 
-    cli_set = runner.invoke(
-        app, ["auth", "storage", "set", "file", "--profile", "my new work"]
-    )
+    cli_set = runner.invoke(app, ["auth", "storage", "set", "file", "--profile", "my new work"])
     assert cli_set.exit_code == 0
 
-    cli_rename = runner.invoke(
-        app, ["login", "profile", "rename", "my new work", "renamed work"]
-    )
+    cli_rename = runner.invoke(app, ["login", "profile", "rename", "my new work", "renamed work"])
     assert cli_rename.exit_code == 0
     assert AuthManager("renamed work").profile_exists()
 
