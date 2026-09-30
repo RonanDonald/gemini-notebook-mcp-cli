@@ -530,7 +530,7 @@ _RESERVED_DEVICE_NAMES = {
 }
 
 
-def validate_profile_name(profile_name: str, strict: bool = False) -> None:
+def validate_profile_name(profile_name: str, strict: bool = True) -> None:
     """Validate profile name for filesystem and keystore safety.
 
     - Base safety check (strict=False, used everywhere in file mode):
