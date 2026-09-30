@@ -20,15 +20,16 @@ from typing import Any
 PROBE_TTL_SECONDS = 30 * 86400.0  # 30 days
 
 
-def _get_notices_file() -> Path:
+def _get_notices_file(storage_dir: Path | None = None) -> Path:
     from notebooklm_tools.utils.config import get_storage_dir
 
-    return get_storage_dir() / "notices.json"
+    root = storage_dir if storage_dir is not None else get_storage_dir()
+    return root / "notices.json"
 
 
-def load_notices() -> dict[str, Any]:
+def load_notices(storage_dir: Path | None = None) -> dict[str, Any]:
     """Read the notices state dictionary."""
-    notices_file = _get_notices_file()
+    notices_file = _get_notices_file(storage_dir)
     if not notices_file.exists():
         return {}
     try:
@@ -38,9 +39,9 @@ def load_notices() -> dict[str, Any]:
         return {}
 
 
-def save_notices(data: dict[str, Any]) -> None:
+def save_notices(data: dict[str, Any], storage_dir: Path | None = None) -> None:
     """Save the notices state atomically with restrictive permissions."""
-    notices_file = _get_notices_file()
+    notices_file = _get_notices_file(storage_dir)
     notices_file.parent.mkdir(parents=True, exist_ok=True)
     tmp = notices_file.parent / f"{notices_file.name}.tmp.{os.getpid()}"
     try:
@@ -58,53 +59,56 @@ def save_notices(data: dict[str, Any]) -> None:
                 tmp.unlink()
 
 
-def is_cli_notice_shown() -> bool:
+def is_cli_notice_shown(storage_dir: Path | None = None) -> bool:
     """True if the one-time CLI storage notice was already displayed."""
-    return bool(load_notices().get("cli_notice_shown", False))
+    return bool(load_notices(storage_dir).get("cli_notice_shown", False))
 
 
-def mark_cli_notice_shown() -> None:
+def mark_cli_notice_shown(storage_dir: Path | None = None) -> None:
     """Record that the one-time CLI storage notice was displayed."""
-    notices = load_notices()
+    notices = load_notices(storage_dir)
     notices["cli_notice_shown"] = True
-    save_notices(notices)
+    save_notices(notices, storage_dir)
 
 
-def is_mcp_notice_shown() -> bool:
+def is_mcp_notice_shown(storage_dir: Path | None = None) -> bool:
     """True if the one-time MCP storage notice was already delivered."""
-    return bool(load_notices().get("mcp_notice_shown", False))
+    return bool(load_notices(storage_dir).get("mcp_notice_shown", False))
 
 
-def mark_mcp_notice_shown() -> None:
+def mark_mcp_notice_shown(storage_dir: Path | None = None) -> None:
     """Record that the one-time MCP storage notice was delivered."""
-    notices = load_notices()
+    notices = load_notices(storage_dir)
     notices["mcp_notice_shown"] = True
-    save_notices(notices)
+    save_notices(notices, storage_dir)
 
 
-def get_protect_answer(profile_name: str) -> str | None:
+def get_protect_answer(profile_name: str, storage_dir: Path | None = None) -> str | None:
     """Get the user's answer to the 'Protect this login?' prompt ('yes', 'no', or None)."""
-    notices = load_notices()
+    notices = load_notices(storage_dir)
     answered = notices.get("protect_answered", {})
     if isinstance(answered, dict):
         return answered.get(profile_name)
     return None
 
 
-def record_protect_answer(profile_name: str, answer: str) -> None:
+def record_protect_answer(profile_name: str, answer: str, storage_dir: Path | None = None) -> None:
     """Record the user's answer ('yes' or 'no') for a profile so they are not asked again."""
-    notices = load_notices()
+    notices = load_notices(storage_dir)
     answered = notices.setdefault("protect_answered", {})
     if not isinstance(answered, dict):
         answered = {}
         notices["protect_answered"] = answered
     answered[profile_name] = answer.strip().lower()
-    save_notices(notices)
+    save_notices(notices, storage_dir)
 
 
-def get_cached_probe_result(max_age_seconds: float = PROBE_TTL_SECONDS) -> bool | None:
+def get_cached_probe_result(
+    max_age_seconds: float = PROBE_TTL_SECONDS,
+    storage_dir: Path | None = None,
+) -> bool | None:
     """Return cached keystore availability probe result if fresh, else None."""
-    notices = load_notices()
+    notices = load_notices(storage_dir)
     probe = notices.get("probe")
     if isinstance(probe, dict):
         checked_at = probe.get("checked_at")
@@ -117,11 +121,11 @@ def get_cached_probe_result(max_age_seconds: float = PROBE_TTL_SECONDS) -> bool 
     return None
 
 
-def cache_probe_result(available: bool) -> None:
+def cache_probe_result(available: bool, storage_dir: Path | None = None) -> None:
     """Cache the result of an OS keystore availability probe."""
-    notices = load_notices()
+    notices = load_notices(storage_dir)
     notices["probe"] = {
         "result": "available" if available else "unavailable",
         "checked_at": time.time(),
     }
-    save_notices(notices)
+    save_notices(notices, storage_dir)

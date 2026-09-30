@@ -119,8 +119,9 @@ def _register_tools() -> None:
 # Register tools on import
 _register_tools()
 
-# Start background probe for storage awareness notice
-start_mcp_background_probe()
+# Start background probe for storage awareness notice outside tests
+if not os.environ.get("PYTEST_CURRENT_TEST"):
+    start_mcp_background_probe()
 
 
 def main() -> None:

@@ -7,6 +7,7 @@ import logging
 import os
 import threading
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any, ParamSpec, TypeAlias, TypeVar, cast
 
 from notebooklm_tools.core.client import NotebookLMClient
@@ -117,25 +118,52 @@ _client_lock = threading.Lock()
 _query_timeout: float = float(os.environ.get("NOTEBOOKLM_QUERY_TIMEOUT", "120.0"))
 _mcp_probe_event = threading.Event()
 _mcp_probe_available = False
+_mcp_probe_thread: threading.Thread | None = None
+_allow_mcp_bg_probe: bool = False
 
 
-def reset_mcp_probe_state() -> None:
-    """Reset the MCP background probe state (for testing)."""
-    global _mcp_probe_available
+def reset_mcp_probe_state(timeout: float = 2.0) -> None:
+    """Reset the MCP background probe state and join any running probe thread."""
+    global _mcp_probe_available, _mcp_probe_thread
+    if _mcp_probe_thread is not None and _mcp_probe_thread.is_alive():
+        _mcp_probe_thread.join(timeout=timeout)
+    _mcp_probe_thread = None
     _mcp_probe_available = False
     _mcp_probe_event.clear()
 
 
-def start_mcp_background_probe() -> None:
-    """Start background probe thread once at MCP server start."""
+def start_mcp_background_probe(
+    storage_dir: Path | None = None,
+    backend_factory: Callable[[], Any] | None = None,
+    *,
+    force: bool = False,
+) -> None:
+    """Start background probe thread once at MCP server start.
+
+    Captures target storage directory and backend factory at thread launch time
+    to prevent thread from resolving dynamically during test environment teardown.
+    """
+    global _mcp_probe_thread
+    if not force and os.environ.get("PYTEST_CURRENT_TEST") and not _allow_mcp_bg_probe:
+        return
+
+    if _mcp_probe_thread is not None and _mcp_probe_thread.is_alive():
+        _mcp_probe_thread.join(timeout=2.0)
+
     _mcp_probe_event.clear()
 
-    def _worker() -> None:
+    from notebooklm_tools.core.credential_store import CredentialStore, get_backend_factory
+    from notebooklm_tools.utils.config import get_storage_dir
+
+    captured_storage_dir = storage_dir if storage_dir is not None else get_storage_dir()
+    captured_factory = backend_factory if backend_factory is not None else get_backend_factory()
+
+    def _worker(target_dir: Path, factory: Callable[[], Any]) -> None:
         global _mcp_probe_available
         try:
             from notebooklm_tools.core.notices import is_mcp_notice_shown
 
-            if is_mcp_notice_shown():
+            if is_mcp_notice_shown(storage_dir=target_dir):
                 _mcp_probe_available = False
                 return
 
@@ -151,17 +179,21 @@ def start_mcp_background_probe() -> None:
                 _mcp_probe_available = False
                 return
 
-            from notebooklm_tools.core.credential_store import CredentialStore
-
-            store = CredentialStore()
+            backend = factory() if factory is not None else None
+            store = CredentialStore(storage_dir=target_dir, backend=backend)
             _mcp_probe_available = store.should_offer_protection(profile_name=profile)
         except Exception:
             _mcp_probe_available = False
         finally:
             _mcp_probe_event.set()
 
-    t = threading.Thread(target=_worker, name="nlm-mcp-bg-probe", daemon=True)
-    t.start()
+    _mcp_probe_thread = threading.Thread(
+        target=_worker,
+        args=(captured_storage_dir, captured_factory),
+        name="nlm-mcp-bg-probe",
+        daemon=True,
+    )
+    _mcp_probe_thread.start()
 
 
 def maybe_attach_mcp_notice(result: Any) -> None:

@@ -29,8 +29,8 @@ def test_100_mcp_tool_calls_zero_tool_call_probes_and_no_delay(monkeypatch, fake
     auth.save_profile(cookies={"SID": "test_sid"}, email="user@example.com")
 
     # Start background probe and wait for it to complete
-    start_mcp_background_probe()
-    _mcp_probe_event.wait(timeout=2.0)
+    start_mcp_background_probe(force=True)
+    assert _mcp_probe_event.wait(timeout=5.0), "Background probe timed out"
 
     # Mock external network calls inside server_info so benchmark isolates local MCP overhead
     monkeypatch.setattr(

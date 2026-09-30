@@ -1,8 +1,159 @@
+import fnmatch
 import os
+from pathlib import Path
 
 import pytest
 
 from notebooklm_tools.core.cookie_rotation import DISABLE_ROTATE_COOKIES_ENV
+
+
+def _is_allowed_live_modification(rel_path: str) -> bool:
+    """Check if a modified file in ~/.notebooklm-mcp-cli is on the live-written allowlist."""
+    norm = rel_path.replace("\\", "/")
+    if norm in ("auth.json", "update_check.json", "cache/update_check.json"):
+        return True
+    if fnmatch.fnmatch(norm, "profiles/*/cookies.json"):
+        return True
+    return bool(fnmatch.fnmatch(norm, "profiles/*/metadata.json"))
+
+
+def _snapshot_storage_dir(dir_path: Path) -> dict[str, float]:
+    """Record relative file paths and modification times (never file contents)."""
+    snapshot: dict[str, float] = {}
+    if not dir_path.exists():
+        return snapshot
+    for root, dirs, files in os.walk(dir_path):
+        dirs[:] = [d for d in dirs if not d.startswith("chrome-profile")]
+        for f in files:
+            p = Path(root) / f
+            try:
+                rel = str(p.relative_to(dir_path))
+                snapshot[rel] = p.stat().st_mtime
+            except (OSError, ValueError):
+                pass
+    return snapshot
+
+
+def _check_tripwire_changes(
+    before_mcp_cli: dict[str, float],
+    after_mcp_cli: dict[str, float],
+    before_mcp: dict[str, float],
+    after_mcp: dict[str, float],
+) -> tuple[list[str], list[str]]:
+    """Compare snapshots and return (critical_failures, allowed_warnings)."""
+    critical_failures: list[str] = []
+    allowed_warnings: list[str] = []
+
+    # 1. Check ~/.notebooklm-mcp-cli
+    for path in sorted(after_mcp_cli.keys() - before_mcp_cli.keys()):
+        critical_failures.append(
+            f"~/.notebooklm-mcp-cli: added {path} (mtime {after_mcp_cli[path]})"
+        )
+    for path in sorted(before_mcp_cli.keys() - after_mcp_cli.keys()):
+        critical_failures.append(
+            f"~/.notebooklm-mcp-cli: removed {path} (was mtime {before_mcp_cli[path]})"
+        )
+    for path in sorted(before_mcp_cli.keys() & after_mcp_cli.keys()):
+        if before_mcp_cli[path] != after_mcp_cli[path]:
+            if _is_allowed_live_modification(path):
+                allowed_warnings.append(
+                    f"~/.notebooklm-mcp-cli: live-modified {path} (mtime {before_mcp_cli[path]} -> {after_mcp_cli[path]})"
+                )
+            else:
+                critical_failures.append(
+                    f"~/.notebooklm-mcp-cli: modified {path} (mtime {before_mcp_cli[path]} -> {after_mcp_cli[path]})"
+                )
+
+    # 2. Check ~/.notebooklm-mcp (no allowed live-modifications here)
+    for path in sorted(after_mcp.keys() - before_mcp.keys()):
+        critical_failures.append(f"~/.notebooklm-mcp: added {path} (mtime {after_mcp[path]})")
+    for path in sorted(before_mcp.keys() - after_mcp.keys()):
+        critical_failures.append(
+            f"~/.notebooklm-mcp: removed {path} (was mtime {before_mcp[path]})"
+        )
+    for path in sorted(before_mcp.keys() & after_mcp.keys()):
+        if before_mcp[path] != after_mcp[path]:
+            critical_failures.append(
+                f"~/.notebooklm-mcp: modified {path} (mtime {before_mcp[path]} -> {after_mcp[path]})"
+            )
+
+    return critical_failures, allowed_warnings
+
+
+def _evaluate_tripwire(
+    before_cli: dict[str, float],
+    after_cli: dict[str, float],
+    before_mcp: dict[str, float],
+    after_mcp: dict[str, float],
+) -> tuple[list[str], list[str]]:
+    """Evaluate snapshots against tripwire rules, print warnings, and fail on violations."""
+    critical_failures, allowed_warnings = _check_tripwire_changes(
+        before_cli, after_cli, before_mcp, after_mcp
+    )
+
+    if allowed_warnings:
+        print("\nStorage tripwire warning (live application files modified during run):")
+        for warn in allowed_warnings:
+            print(f"  {warn}")
+
+    if critical_failures:
+        details = "\n  ".join(critical_failures)
+        pytest.fail(
+            f"STORAGE TRIPWIRE FAILED: Real developer storage was modified during the test session!\n"
+            f"  {details}\n"
+            f"Tests must NEVER add, remove, or modify unapproved files in ~/.notebooklm-mcp-cli or ~/.notebooklm-mcp."
+        )
+
+    return critical_failures, allowed_warnings
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _storage_tripwire():
+    """Fail the test session if any real developer storage is added, removed, or modified."""
+    if os.environ.get("NOTEBOOKLM_E2E") == "1":
+        print("\nStorage tripwire: OFF (NOTEBOOKLM_E2E=1)")
+        yield
+        return
+
+    real_home_str = os.environ.get("HOME") or os.environ.get("USERPROFILE")
+    if not real_home_str:
+        yield
+        return
+
+    real_home = Path(real_home_str).expanduser()
+    real_mcp_cli = real_home / ".notebooklm-mcp-cli"
+    real_mcp = real_home / ".notebooklm-mcp"
+
+    before_cli = _snapshot_storage_dir(real_mcp_cli)
+    before_mcp = _snapshot_storage_dir(real_mcp)
+
+    yield
+
+    after_cli = _snapshot_storage_dir(real_mcp_cli)
+    after_mcp = _snapshot_storage_dir(real_mcp)
+
+    _evaluate_tripwire(before_cli, after_cli, before_mcp, after_mcp)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_home(monkeypatch, tmp_path_factory, request):
+    """Isolate HOME and Path.home() for every test except real_os_store and explicit e2e."""
+    if request.node.get_closest_marker("real_os_store") or (
+        os.environ.get("NOTEBOOKLM_E2E") == "1" and request.node.get_closest_marker("e2e")
+    ):
+        yield
+        return
+
+    fake_home = tmp_path_factory.mktemp("fake_home")
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setattr(
+        Path,
+        "home",
+        lambda: Path(os.environ.get("HOME") or os.environ.get("USERPROFILE") or str(fake_home)),
+    )
+
+    yield
 
 
 @pytest.fixture(autouse=True)
@@ -19,7 +170,7 @@ def _isolate_storage(monkeypatch, tmp_path, request):
     """
     from notebooklm_tools.utils.config import reset_config
 
-    if os.environ.get("NOTEBOOKLM_E2E") and request.node.get_closest_marker("e2e"):
+    if os.environ.get("NOTEBOOKLM_E2E") == "1" and request.node.get_closest_marker("e2e"):
         monkeypatch.setenv("NLM_AUTH_STORAGE", "file")
         reset_config()
         try:
@@ -29,7 +180,6 @@ def _isolate_storage(monkeypatch, tmp_path, request):
         return
 
     from notebooklm_tools.mcp.tools._utils import reset_mcp_probe_state
-    from notebooklm_tools.utils.config import reset_config
 
     reset_mcp_probe_state()
     monkeypatch.setenv("NOTEBOOKLM_MCP_CLI_PATH", str(tmp_path / "storage"))

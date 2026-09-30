@@ -639,17 +639,9 @@ def find_plain_backup_files(
     - `cookies.json.bak`, `auth.json.bak`, or `metadata.json.bak` inside that profile's folder
     - Legacy `~/.notebooklm-mcp/auth.json`
     """
-    from notebooklm_tools.utils.config import get_storage_dir
+    from notebooklm_tools.utils.config import get_legacy_storage_dir, get_storage_dir
 
     root = storage_dir if storage_dir is not None else get_storage_dir()
-    if home_dir is not None:
-        home = home_dir
-    elif os.environ.get("NOTEBOOKLM_MCP_CLI_PATH"):
-        home = root.parent
-    else:
-        from notebooklm_tools.utils.config import get_home_dir
-
-        home = get_home_dir()
 
     candidates: list[Path] = []
 
@@ -668,7 +660,8 @@ def find_plain_backup_files(
                 candidates.append(target)
 
     # 3. Legacy ~/.notebooklm-mcp/auth.json
-    legacy_file = home / ".notebooklm-mcp" / "auth.json"
+    legacy_dir = home_dir / ".notebooklm-mcp" if home_dir is not None else get_legacy_storage_dir()
+    legacy_file = legacy_dir / "auth.json"
     if legacy_file.is_file() and not legacy_file.is_symlink():
         candidates.append(legacy_file)
 

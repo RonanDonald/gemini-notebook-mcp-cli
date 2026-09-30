@@ -1,4 +1,4 @@
-"""Tests verifying that backups/ folder contents survive plain copy cleanup."""
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -13,6 +13,11 @@ runner = CliRunner()
 
 @pytest.fixture(autouse=True)
 def setup_env(tmp_path, monkeypatch, fake_credential_store):
+    fake_home = tmp_path / "cleanup_home"
+    fake_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
     monkeypatch.setenv("NOTEBOOKLM_MCP_CLI_PATH", str(tmp_path))
     reset_config()
     yield
@@ -50,6 +55,17 @@ def test_backups_folder_survives_cleanup(tmp_path, monkeypatch, fake_credential_
         '{"csrf_token": "token123", "session_id": "sess123"}', encoding="utf-8"
     )
 
+    # Legacy auth.json in isolated fake home (under tmp_path)
+    from notebooklm_tools.utils.config import get_legacy_storage_dir
+
+    legacy_dir = get_legacy_storage_dir()
+    legacy_dir.mkdir(parents=True, exist_ok=True)
+    legacy_auth = legacy_dir / "auth.json"
+    legacy_auth.write_text('{"cookies": {"SID": "legacy_sid"}}', encoding="utf-8")
+
+    # PROOF: Legacy path MUST be strictly contained inside tmp_path
+    assert legacy_auth.is_relative_to(tmp_path), f"{legacy_auth} is not under {tmp_path}!"
+
     # A non-login file that must be skipped
     unrelated_file = profile_dir / "random.txt"
     unrelated_file.write_text("not json", encoding="utf-8")
@@ -63,6 +79,7 @@ def test_backups_folder_survives_cleanup(tmp_path, monkeypatch, fake_credential_
     assert root_backup in candidates
     assert profile_cookies_bak in candidates
     assert profile_metadata_bak in candidates
+    assert legacy_auth in candidates
     # deceptive_backup inside backups/ must NOT be in candidates!
     assert deceptive_backup not in candidates
     assert unrelated_file not in candidates
@@ -70,9 +87,9 @@ def test_backups_folder_survives_cleanup(tmp_path, monkeypatch, fake_credential_
     # Run nlm auth storage set protected with input 'y' to confirm deletion
     res = runner.invoke(app, ["auth", "storage", "set", "protected"], input="y\n")
     assert res.exit_code == 0
-    assert "Found 3 older plaintext backup file(s):" in res.output
-    assert "Delete these 3 old plain copies?" in res.output
-    assert "Removed 3 old plain copies." in res.output
+    assert "Found 4 older plaintext backup file(s):" in res.output
+    assert "Delete these 4 old plain copies?" in res.output
+    assert "Removed 4 old plain copies." in res.output
     # Must say "removed", not "securely removed"
     assert "securely removed" not in res.output
 
@@ -80,6 +97,7 @@ def test_backups_folder_survives_cleanup(tmp_path, monkeypatch, fake_credential_
     assert not root_backup.exists()
     assert not profile_cookies_bak.exists()
     assert not profile_metadata_bak.exists()
+    assert not legacy_auth.exists()
 
     # CRITICAL: backups/ and its files are 100% untouched and survived!
     assert backups_dir.exists()

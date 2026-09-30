@@ -716,7 +716,7 @@ class CredentialStore:
 
         # 2. Profile state checks
         if profile_name:
-            if get_protect_answer(profile_name) is not None:
+            if get_protect_answer(profile_name, storage_dir=self._storage_dir) is not None:
                 return False
             try:
                 if get_auth_storage_mode(profile_name) != "file":
@@ -725,13 +725,13 @@ class CredentialStore:
                 return False
 
         # 3. Cached probe result (30 days)
-        cached = get_cached_probe_result()
+        cached = get_cached_probe_result(storage_dir=self._storage_dir)
         if cached is not None:
             return cached
 
         # 4. Real probe at most once per install
         available = self.is_available()
-        cache_probe_result(available)
+        cache_probe_result(available, storage_dir=self._storage_dir)
         return available
 
     def has_key(self, profile_name: str) -> bool:

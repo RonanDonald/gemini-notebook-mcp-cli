@@ -169,6 +169,11 @@ def get_config_dir() -> Path:
     return get_storage_dir()
 
 
+def get_legacy_storage_dir() -> Path:
+    """Get the legacy storage directory (~/.notebooklm-mcp/)."""
+    return get_home_dir() / ".notebooklm-mcp"
+
+
 def get_data_dir() -> Path:
     """Get the data directory path (alias for get_storage_dir)."""
     return get_storage_dir()
@@ -275,13 +280,13 @@ def get_auth_cache_file() -> Path:
 
 # Old locations for Chrome profiles (checked for migration)
 OLD_CHROME_PROFILES = [
-    get_home_dir() / ".notebooklm-mcp" / "chrome-profile",  # Old MCP (pre-0.2.13)
+    get_legacy_storage_dir() / "chrome-profile",  # Old MCP (pre-0.2.13)
     get_home_dir() / ".nlm" / "chrome-profile",  # Old CLI
 ]
 
 # Old locations for auth.json (checked for migration)
 OLD_AUTH_LOCATIONS = [
-    get_home_dir() / ".notebooklm-mcp" / "auth.json",  # Old MCP (pre-0.2.13)
+    get_legacy_storage_dir() / "auth.json",  # Old MCP (pre-0.2.13)
 ]
 
 # Old locations for aliases
