@@ -14,10 +14,15 @@ Verifies:
 """
 
 import json
+import subprocess
+import sys
 import threading
+from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
+from notebooklm_tools.cli.main import app
 from notebooklm_tools.core.auth import (
     AuthManager,
     AuthTokens,
@@ -27,8 +32,17 @@ from notebooklm_tools.core.auth import (
 from notebooklm_tools.core.credential_store import (
     BackendUnavailableError,
     CredentialStore,
+    InvalidProfileNameError,
 )
 from notebooklm_tools.core.exceptions import AccountMismatchError
+from notebooklm_tools.mcp.tools._utils import reset_client
+from notebooklm_tools.mcp.tools.notebooks import notebook_list
+from notebooklm_tools.services.auth_storage import (
+    get_storage_status,
+    rename_profile,
+    set_storage_mode,
+)
+from notebooklm_tools.services.errors import ValidationError
 from notebooklm_tools.utils.config import (
     get_profile_dir,
     reset_config,
@@ -357,3 +371,178 @@ def test_concurrent_reader_during_file_mode_save(tmp_path):
     t_writer.join()
 
     assert not errors, f"Concurrent reader failed with errors: {errors}"
+
+
+@pytest.mark.parametrize("mode", ["file", "protected"])
+def test_enterprise_consumer_relogin_clears_base_host_both_modes(mode, fake_credential_store):
+    """Enterprise -> consumer re-login clears base_host, and consumer -> Enterprise sets it."""
+    prof_name = f"relogin_prof_{mode}"
+    set_auth_storage_mode(prof_name, mode)
+    auth = AuthManager(prof_name)
+
+    # 1. Login with Enterprise host
+    auth.save_profile(
+        cookies={"SID": "ent_cookie"},
+        csrf_token="ent_csrf",
+        session_id="ent_sess",
+        email="user@enterprise.com",
+        base_host="notebook.cloud.google.com",
+    )
+    loaded = load_cached_tokens(prof_name)
+    assert loaded is not None
+    assert loaded.base_host == "notebook.cloud.google.com"
+
+    # 2. Re-login as consumer (base_host=None / empty string)
+    # save_tokens_to_cache does base_host=tokens.base_host or None
+    save_tokens_to_cache(
+        AuthTokens(
+            cookies={"SID": "consumer_cookie"},
+            csrf_token="cons_csrf",
+            session_id="cons_sess",
+            base_host=None,
+        ),
+        profile_name=prof_name,
+    )
+    loaded_consumer = load_cached_tokens(prof_name)
+    assert loaded_consumer is not None
+    assert loaded_consumer.cookies == {"SID": "consumer_cookie"}
+    # base_host must be cleared (None or ""), not stale Enterprise host
+    assert not loaded_consumer.base_host
+
+    # 3. Switch back to Enterprise
+    save_tokens_to_cache(
+        AuthTokens(
+            cookies={"SID": "ent_cookie_2"},
+            csrf_token="ent_csrf_2",
+            session_id="ent_sess_2",
+            base_host="notebook.cloud.google.com",
+        ),
+        profile_name=prof_name,
+    )
+    loaded_ent_2 = load_cached_tokens(prof_name)
+    assert loaded_ent_2 is not None
+    assert loaded_ent_2.base_host == "notebook.cloud.google.com"
+
+
+def test_legacy_profile_name_with_spaces_file_mode_and_protected_refusal(fake_credential_store):
+    """Profiles with spaces work in file mode (load, save, status, rename) and are refused for protected mode."""
+    prof_name = "my work"
+    auth = AuthManager(prof_name)
+
+    # Save and load in file mode
+    auth.save_profile(
+        cookies={"SID": "space_cookie"},
+        csrf_token="space_csrf",
+        email="space@example.com",
+    )
+    assert auth.profile_exists()
+    loaded = load_cached_tokens(prof_name)
+    assert loaded is not None
+    assert loaded.cookies == {"SID": "space_cookie"}
+
+    # Status check
+    status = get_storage_status(prof_name)
+    assert status["profile"] == "my work"
+    assert status["mode"] == "file"
+
+    # Set storage to file (no-op update) works
+    res_set = set_storage_mode("file", prof_name)
+    assert res_set["mode"] == "file"
+
+    # Rename profile with spaces in file mode
+    res_rename = rename_profile("my work", "my new work")
+    assert res_rename["old_name"] == "my work"
+    assert res_rename["new_name"] == "my new work"
+    assert AuthManager("my new work").profile_exists()
+    assert not AuthManager("my work").profile_exists()
+
+    # CLI commands work for legacy profile names
+    runner = CliRunner()
+    cli_status = runner.invoke(app, ["auth", "storage", "status", "--profile", "my new work"])
+    assert cli_status.exit_code == 0
+    assert "my new work" in cli_status.stdout
+
+    cli_set = runner.invoke(
+        app, ["auth", "storage", "set", "file", "--profile", "my new work"]
+    )
+    assert cli_set.exit_code == 0
+
+    cli_rename = runner.invoke(
+        app, ["login", "profile", "rename", "my new work", "renamed work"]
+    )
+    assert cli_rename.exit_code == 0
+    assert AuthManager("renamed work").profile_exists()
+
+    # Protected mode must refuse profile with spaces with a clear rename suggestion
+    with pytest.raises(ValidationError) as exc_info:
+        set_storage_mode("protected", "renamed work")
+    err_msg = str(exc_info.value)
+    assert "characters unsupported by protected mode" in err_msg
+    assert "nlm login profile rename" in err_msg
+
+    with pytest.raises(ValueError) as exc_info_val:
+        set_auth_storage_mode("renamed work", "protected")
+    assert "characters unsupported by protected mode" in str(exc_info_val.value)
+
+    # CredentialStore directly refuses profile with spaces
+    with pytest.raises(InvalidProfileNameError):
+        CredentialStore().write_credentials("renamed work", {"cookies": {}})
+
+
+def test_e2e_storage_isolation_fixture_yields_in_subprocess(tmp_path):
+    """Live E2E test runs with NOTEBOOKLM_E2E=1 yield cleanly without fixture error."""
+    probe_test = tmp_path / "test_probe_e2e.py"
+    probe_test.write_text(
+        """
+import pytest
+
+@pytest.mark.e2e
+def test_dummy_e2e_marker():
+    assert True
+""",
+        encoding="utf-8",
+    )
+
+    env = dict(subprocess.os.environ)
+    env["NOTEBOOKLM_E2E"] = "1"
+    env["NOTEBOOKLM_MCP_CLI_PATH"] = str(tmp_path / "storage")
+
+    res = subprocess.run(
+        [sys.executable, "-m", "pytest", str(probe_test), "-m", "e2e", "-q"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0, f"pytest failed with output: {res.stdout}\n{res.stderr}"
+    assert "1 passed" in res.stdout
+    assert "did not yield a value" not in res.stderr
+    assert "did not yield a value" not in res.stdout
+
+
+def test_corrupt_config_clean_error_in_mcp_and_cli(tmp_path, monkeypatch):
+    """Corrupt config.toml yields a clean error in MCP and CLI without tracebacks."""
+    config_file = tmp_path / "config.toml"
+    config_file.write_text("corrupt = [[[\n", encoding="utf-8")
+    monkeypatch.setenv("NOTEBOOKLM_MCP_CLI_PATH", str(tmp_path))
+    reset_config()
+    reset_client()
+
+    # MCP tool returns clean error dict
+    mcp_res = notebook_list()
+    assert mcp_res["status"] == "error"
+    assert "Corrupt configuration file" in mcp_res["error"]
+    assert "To reset: delete the file or run 'nlm config reset'" in mcp_res["error"]
+
+    # CLI command exits 1 with clean error and zero traceback
+    env = dict(subprocess.os.environ)
+    env["NOTEBOOKLM_MCP_CLI_PATH"] = str(tmp_path)
+    cli_proc = subprocess.run(
+        [sys.executable, "-m", "notebooklm_tools.cli.main", "notebook", "list"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert cli_proc.returncode == 1
+    assert "✗ Error: Corrupt configuration file" in cli_proc.stdout
+    assert "Traceback" not in cli_proc.stderr
+    assert "Traceback" not in cli_proc.stdout
