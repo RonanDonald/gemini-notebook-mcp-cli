@@ -598,10 +598,6 @@ class AuthManager:
             email = preserved_metadata.get("email")
         if browser_backend is None:
             browser_backend = preserved_metadata.get("browser_backend")
-        if build_label is None:
-            build_label = preserved_metadata.get("build_label")
-        if base_host is None:
-            base_host = preserved_metadata.get("base_host")
 
         mode = get_auth_storage_mode(self.profile_name)
 
