@@ -95,3 +95,30 @@ def test_server_info_omitted_when_keystore_unavailable(monkeypatch):
     monkeypatch.setenv("SSH_CONNECTION", "192.168.1.1 1234 192.168.1.2 22")
     info = server_info()
     assert "storage_notice" not in info
+
+
+def test_importing_server_never_starts_probe(tmp_path):
+    """Importing the server (as pytest collection does) must not start the keystore probe."""
+    import os
+    import subprocess
+    import sys
+
+    storage = tmp_path / "storage"
+    (storage / "profiles" / "default").mkdir(parents=True)
+    (storage / "profiles" / "default" / "cookies.json").write_text('{"cookies": {"SID": "x"}}')
+    (storage / "profiles" / "default" / "metadata.json").write_text("{}")
+    script = (
+        "import notebooklm_tools.core.credential_store as cs\n"
+        "cs.set_backend_factory(lambda: cs.InMemoryCredentialBackend())\n"
+        "import notebooklm_tools.mcp.server\n"
+        "from notebooklm_tools.mcp.tools import _utils\n"
+        "print(_utils._mcp_probe_thread is None)\n"
+    )
+    env = {k: v for k, v in os.environ.items() if k != "PYTEST_CURRENT_TEST"}
+    env["NOTEBOOKLM_MCP_CLI_PATH"] = str(storage)
+    result = subprocess.run(
+        [sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "True"
+    assert not (storage / "notices.json").exists()

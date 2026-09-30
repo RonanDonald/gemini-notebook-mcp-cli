@@ -119,10 +119,6 @@ def _register_tools() -> None:
 # Register tools on import
 _register_tools()
 
-# Start background probe for storage awareness notice outside tests
-if not os.environ.get("PYTEST_CURRENT_TEST"):
-    start_mcp_background_probe()
-
 
 def main() -> None:
     """Run the MCP server.
@@ -224,6 +220,10 @@ Examples:
     from .tools._utils import set_query_timeout
 
     set_query_timeout(args.query_timeout)
+
+    # Start the storage-notice probe only when the server actually runs, never on
+    # import: importing this module (tests, tool listing) must not touch the keystore.
+    start_mcp_background_probe()
 
     # Run server with appropriate transport
     # show_banner=False prevents Rich box-drawing output that can corrupt

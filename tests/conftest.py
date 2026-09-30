@@ -107,32 +107,55 @@ def _evaluate_tripwire(
     return critical_failures, allowed_warnings
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _storage_tripwire():
-    """Fail the test session if any real developer storage is added, removed, or modified."""
+_tripwire_key = pytest.StashKey[tuple[Path, Path, dict[str, float], dict[str, float]]]()
+
+
+def pytest_configure(config):
+    """Snapshot real developer storage before collection imports any package module.
+
+    Taken here (not in a session fixture) so writes triggered at import/collection
+    time are caught too.
+    """
     if os.environ.get("NOTEBOOKLM_E2E") == "1":
         print("\nStorage tripwire: OFF (NOTEBOOKLM_E2E=1)")
-        yield
         return
 
     real_home_str = os.environ.get("HOME") or os.environ.get("USERPROFILE")
     if not real_home_str:
-        yield
         return
 
     real_home = Path(real_home_str).expanduser()
     real_mcp_cli = real_home / ".notebooklm-mcp-cli"
     real_mcp = real_home / ".notebooklm-mcp"
+    config.stash[_tripwire_key] = (
+        real_mcp_cli,
+        real_mcp,
+        _snapshot_storage_dir(real_mcp_cli),
+        _snapshot_storage_dir(real_mcp),
+    )
 
-    before_cli = _snapshot_storage_dir(real_mcp_cli)
-    before_mcp = _snapshot_storage_dir(real_mcp)
 
-    yield
+def pytest_sessionfinish(session, exitstatus):
+    """Fail the test session if any real developer storage is added, removed, or modified."""
+    snapshot = session.config.stash.get(_tripwire_key, None)
+    if snapshot is None:
+        return
 
-    after_cli = _snapshot_storage_dir(real_mcp_cli)
-    after_mcp = _snapshot_storage_dir(real_mcp)
-
-    _evaluate_tripwire(before_cli, after_cli, before_mcp, after_mcp)
+    real_mcp_cli, real_mcp, before_cli, before_mcp = snapshot
+    try:
+        _evaluate_tripwire(
+            before_cli,
+            _snapshot_storage_dir(real_mcp_cli),
+            before_mcp,
+            _snapshot_storage_dir(real_mcp),
+        )
+    except pytest.fail.Exception as exc:
+        reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+        if reporter is not None:
+            reporter.write_line(str(exc), red=True, bold=True)
+        else:
+            print(f"\n{exc}")
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
 @pytest.fixture(autouse=True)

@@ -278,16 +278,23 @@ def get_auth_cache_file() -> Path:
 # Migration Support
 # =============================================================================
 
-# Old locations for Chrome profiles (checked for migration)
-OLD_CHROME_PROFILES = [
-    get_legacy_storage_dir() / "chrome-profile",  # Old MCP (pre-0.2.13)
-    get_home_dir() / ".nlm" / "chrome-profile",  # Old CLI
-]
+# Old locations are resolved per call (not at import) so they follow the current home.
 
-# Old locations for auth.json (checked for migration)
-OLD_AUTH_LOCATIONS = [
-    get_legacy_storage_dir() / "auth.json",  # Old MCP (pre-0.2.13)
-]
+
+def get_old_chrome_profiles() -> list[Path]:
+    """Old locations for Chrome profiles (checked for migration)."""
+    return [
+        get_legacy_storage_dir() / "chrome-profile",  # Old MCP (pre-0.2.13)
+        get_home_dir() / ".nlm" / "chrome-profile",  # Old CLI
+    ]
+
+
+def get_old_auth_locations() -> list[Path]:
+    """Old locations for auth.json (checked for migration)."""
+    return [
+        get_legacy_storage_dir() / "auth.json",  # Old MCP (pre-0.2.13)
+    ]
+
 
 # Old locations for aliases
 OLD_ALIAS_LOCATIONS: list[Path] = []
@@ -315,11 +322,11 @@ def check_migration_sources() -> dict[str, list[Path]]:
         "aliases": [],
     }
 
-    for profile_path in OLD_CHROME_PROFILES:
+    for profile_path in get_old_chrome_profiles():
         if profile_path.exists() and profile_path.is_dir():
             result["chrome_profiles"].append(profile_path)
 
-    for auth_path in OLD_AUTH_LOCATIONS:
+    for auth_path in get_old_auth_locations():
         if auth_path.exists() and auth_path.is_file():
             result["auth_files"].append(auth_path)
 
