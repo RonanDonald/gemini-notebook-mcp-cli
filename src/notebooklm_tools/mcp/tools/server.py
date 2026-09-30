@@ -142,15 +142,9 @@ def _check_storage_notice() -> str | None:
         if get_auth_storage_mode(profile) != "file":
             return None
 
-        if _mcp_probe_event.is_set():
-            if not _mcp_probe_available:
-                return None
-        else:
-            from notebooklm_tools.core.credential_store import CredentialStore
-
-            store = CredentialStore()
-            if not store.should_offer_protection(profile_name=profile):
-                return None
+        # Never probe inside a tool call: rely only on the finished background probe.
+        if not _mcp_probe_event.is_set() or not _mcp_probe_available:
+            return None
 
         return (
             "Optional: this login can be protected in the OS keychain with "

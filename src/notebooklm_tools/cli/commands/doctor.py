@@ -176,6 +176,28 @@ def _check_authentication(verbose: bool) -> bool:
     console.print(f"  Default profile: [cyan]{default_profile}[/cyan]")
     console.print(f"  Profiles found: {len(profiles)}")
 
+    # Plain vs protected per profile (reads local markers only, no keystore access)
+    from notebooklm_tools.utils.config import get_auth_storage_mode
+
+    plain_profiles: list[str] = []
+    for name in sorted(profiles):
+        try:
+            mode = get_auth_storage_mode(name)
+        except Exception:
+            console.print(
+                f"    {name}: [yellow]unknown[/yellow] (run nlm auth storage status --profile {name})"
+            )
+            continue
+        if mode == "protected":
+            console.print(f"    {name}: [green]protected[/green]")
+        else:
+            console.print(f"    {name}: plain (file mode)")
+            plain_profiles.append(name)
+    if plain_profiles:
+        console.print(
+            "  [dim]To protect a plain profile: nlm auth storage set protected --profile <name>[/dim]"
+        )
+
     # Check storage mode and conflicts
     from notebooklm_tools.services.auth_storage import get_storage_status
 

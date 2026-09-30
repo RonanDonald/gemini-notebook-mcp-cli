@@ -376,7 +376,7 @@ This decrypts the credentials and writes readable JSON files with `0600` permiss
 
 Usually, no prompt appears during normal terminal operations. However, macOS prompts for permission when a different Python binary attempts to read an item created by another binary:
 
-1. **Desktop extension users**: `desktop-extension/manifest.json` invokes `python3` from `PATH` (`"command": "python3"`), which uses whatever system or Homebrew Python is first on your `PATH`. Because this is a different Python binary from the isolated environment created by `uv tool install`, macOS will display the Keychain access prompt once when the desktop extension runs. Click **Always Allow** (not "Allow").
+1. **Desktop extension users**: the Claude Desktop extension uses `python3` from `PATH` only to run a small launcher (`run_server.py`), which then starts the server with `uvx --from notebooklm-mcp-cli notebooklm-mcp`. `uvx` runs the server in its own environment, separate from `uv tool install`, and may pick a different Python build. If that Python differs from the one that created the key (for example, you enabled Protected mode from the `uv tool` install of `nlm`), macOS shows the Keychain access prompt once when the extension first reads it. Click **Always Allow** (not "Allow").
 2. **Python upgrades**: If you upgrade Python (such as when Homebrew or `uv` installs a new Python release with a different binary path or signature), macOS detects the new binary signature and displays the prompt once more. Click **Always Allow** again.
 3. Once **Always Allow** is clicked for each binary, macOS silently grants access for all future operations, MCP tool calls, and background token refreshes.
 

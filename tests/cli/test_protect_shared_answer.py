@@ -115,3 +115,29 @@ def test_failed_cached_probe_does_not_block_explicit_set_protected(
     # Successful explicit set protected updates the cached probe to available
     assert get_cached_probe_result() is True
     assert get_protect_answer("default") == "yes"
+
+
+def test_wizard_reports_failed_protect_instead_of_hiding_it(monkeypatch, capsys):
+    """Wizard 'Yes' + failed switch must print the error, not swallow it."""
+    import notebooklm_tools.cli.commands.setup_wizard as wizard
+
+    auth = AuthManager("default")
+    auth.save_profile(cookies={"SID": "sid"}, email="user@example.com")
+
+    class _Answer:
+        def ask(self):
+            return True
+
+    def _fail(*args, **kwargs):
+        raise RuntimeError("keystore locked")
+
+    monkeypatch.setattr(wizard, "is_interactive", lambda: True)
+    monkeypatch.setattr(wizard.questionary, "confirm", lambda *a, **k: _Answer())
+    monkeypatch.setattr("notebooklm_tools.services.auth_storage.set_storage_mode", _fail)
+
+    _check_wizard_protect_prompt()
+
+    out = capsys.readouterr().out
+    assert "Could not enable protected mode" in out
+    assert "keystore locked" in out
+    assert get_storage_status("default")["mode"] == "file"

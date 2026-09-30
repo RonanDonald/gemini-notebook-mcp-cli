@@ -232,3 +232,15 @@ def test_cli_storage_resolve_clear_marker(tmp_path):
     )
     assert res_ok.exit_code == 0
     assert "Operation marker cleared" in res_ok.output
+
+
+def test_cli_doctor_lists_plain_and_protected_profiles(tmp_path):
+    """nlm doctor lists every profile as plain or protected, plus the protect command."""
+    AuthManager("work").save_profile(cookies={"SID": "w"}, email="w@example.com")
+    AuthManager("personal").save_profile(cookies={"SID": "p"}, email="p@example.com")
+    set_storage_mode("protected", profile_name="work")
+
+    res = runner.invoke(app, ["doctor"])
+    assert "work: protected" in res.output
+    assert "personal: plain (file mode)" in res.output
+    assert "nlm auth storage set protected --profile <name>" in res.output

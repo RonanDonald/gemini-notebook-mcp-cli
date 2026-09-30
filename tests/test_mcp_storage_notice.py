@@ -73,6 +73,8 @@ def test_server_info_wording_and_visibility(monkeypatch, fake_credential_store):
     auth.save_profile(cookies={"SID": "test_sid"}, email="user@example.com")
 
     # Keystore is available and profile is file mode
+    start_mcp_background_probe(force=True)
+    assert _mcp_probe_event.wait(timeout=5.0), "Background probe timed out"
     info = server_info()
     expected_text = (
         "Optional: this login can be protected in the OS keychain with "
@@ -84,6 +86,25 @@ def test_server_info_wording_and_visibility(monkeypatch, fake_credential_store):
     set_storage_mode("protected", "default")
     info_prot = server_info()
     assert "storage_notice" not in info_prot
+
+
+def test_server_info_never_probes_before_background_probe(monkeypatch, fake_credential_store):
+    """Before the background probe finishes, server_info omits the notice and never probes."""
+    auth = AuthManager("default")
+    auth.save_profile(cookies={"SID": "test_sid"}, email="user@example.com")
+
+    probe_calls = 0
+
+    def counting_probe(self, *args, **kwargs):
+        nonlocal probe_calls
+        probe_calls += 1
+        return True
+
+    monkeypatch.setattr(CredentialWorkerClient, "probe", counting_probe)
+
+    info = server_info()
+    assert "storage_notice" not in info
+    assert probe_calls == 0
 
 
 def test_server_info_omitted_when_keystore_unavailable(monkeypatch):

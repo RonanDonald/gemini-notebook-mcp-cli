@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Conflict detection and interactive resolution for divergent file vs protected credentials.
   - Fast MCP hot-path with in-memory caching (no keychain access on ordinary tool calls) and revision checks.
   - Safe multi-process token rotation with single-flight reloads and compare-and-save semantics.
+  - Told once, never nagged: a one-time CLI tip (terminal only), a one-time MCP notice, and an optional `[y/N]` question after `nlm login` and in `nlm setup` (asked once per profile, default No). `nlm doctor` lists each profile as plain or protected.
+  - When you turn it on, `nlm` lists leftover plain login backups and offers to delete them (default No). The `backups/` folder of setup-wizard backups is never touched.
 
 ### Changed
 

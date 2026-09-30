@@ -439,7 +439,11 @@ def _check_wizard_protect_prompt() -> None:
 
         record_protect_answer(profile, "yes" if ans else "no")
         if ans:
-            set_storage_mode(mode="protected", profile_name=profile)
+            try:
+                set_storage_mode(mode="protected", profile_name=profile)
+            except Exception as exc:
+                console.print(f"[yellow]Could not enable protected mode:[/yellow] {exc}")
+                return
             console.print(f"[green]✓[/green] Profile '{profile}' is now protected.")
             if sys.platform == "darwin":
                 console.print("[dim]Usually no popup. If one appears, click Always Allow.[/dim]")
