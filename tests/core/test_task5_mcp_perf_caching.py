@@ -291,7 +291,7 @@ def test_race_3_mode_switch_to_file(fake_credential_store):
 
 
 def test_race_4_profile_rename(fake_credential_store):
-    """Delayed refresh targeting renamed profile fails StaleRevisionError."""
+    """Delayed refresh targeting renamed profile fails StaleRevisionError and recreates nothing."""
     set_auth_storage_mode("old_name", "protected")
     mgr_old = get_auth_manager("old_name")
     mgr_old.save_profile(cookies={"SID": "old_cookie"}, csrf_token="old_csrf", force=True)
@@ -304,24 +304,55 @@ def test_race_4_profile_rename(fake_credential_store):
 
     # Save to old profile fails because credentials.enc no longer exists there
     with pytest.raises(StaleRevisionError):
-        mgr_old.save_profile(
-            cookies={"SID": "stale_attempt"},
-            csrf_token="stale_csrf",
+        save_tokens_to_cache(
+            AuthTokens(cookies={"SID": "stale_attempt"}, csrf_token="stale_csrf"),
+            profile_name="old_name",
             expected_revision=rev,
             force=False,
         )
 
+    # Assert that after a rename, a stale save neither recreates the old profile folder nor writes plaintext
+    assert not p_old.exists(), "Old profile folder was recreated by stale save!"
+    assert not (p_old / "cookies.json").exists()
+    assert not (p_old / "auth.json").exists()
+
 
 def test_race_5_profile_delete_and_recreate(fake_credential_store):
-    """Delayed refresh after profile delete and recreate fails StaleRevisionError."""
+    """Delayed refresh after profile delete fails StaleRevisionError without creating root auth.json or plaintext."""
+    import shutil
+
+    from notebooklm_tools.core.auth import get_cache_path
+
     set_auth_storage_mode("default", "protected")
     mgr = get_auth_manager("default")
     mgr.save_profile(cookies={"SID": "v1"}, csrf_token="v1_csrf", force=True)
     rev_v1 = load_cached_tokens("default").revision
 
-    # Delete credentials
-    store = CredentialStore()
-    store.delete_credentials("default")
+    # Delete profile directory entirely
+    p_dir = get_profile_dir("default")
+    shutil.rmtree(p_dir)
+
+    # Clean any root auth.json
+    root_auth = get_cache_path()
+    if root_auth.exists():
+        root_auth.unlink()
+
+    # Stale background save with rev_v1 against deleted profile must fail with StaleRevisionError
+    # BEFORE creating directory or writing root auth.json mirror
+    with pytest.raises(StaleRevisionError):
+        save_tokens_to_cache(
+            AuthTokens(cookies={"SID": "stale_v1"}, csrf_token="stale_csrf"),
+            profile_name="default",
+            expected_revision=rev_v1,
+            force=False,
+        )
+
+    # Assert no root auth.json and no plaintext files appeared
+    assert not root_auth.exists(), (
+        "Root auth.json was recreated on stale save after profile deletion!"
+    )
+    assert not (p_dir / "cookies.json").exists()
+    assert not (p_dir / "auth.json").exists()
 
     # Recreate profile with new login
     mgr.save_profile(cookies={"SID": "v2_new_account"}, csrf_token="v2_csrf", force=True)
@@ -330,9 +361,9 @@ def test_race_5_profile_delete_and_recreate(fake_credential_store):
 
     # Stale save with rev_v1 fails
     with pytest.raises(StaleRevisionError):
-        mgr.save_profile(
-            cookies={"SID": "stale_v1"},
-            csrf_token="stale_csrf",
+        save_tokens_to_cache(
+            AuthTokens(cookies={"SID": "stale_v1"}, csrf_token="stale_csrf"),
+            profile_name="default",
             expected_revision=rev_v1,
             force=False,
         )
@@ -383,7 +414,7 @@ def test_rapid_writes_within_one_mtime_tick(fake_credential_store):
 
 
 def test_automatic_recovery_drops_browser_result_on_disk_change(fake_credential_store):
-    """_try_reload_or_headless_auth drops browser result if disk changed during browser run."""
+    """_try_reload_or_headless_auth drops browser result if disk changed during browser run (real chain)."""
     set_auth_storage_mode("default", "protected")
     mgr = get_auth_manager("default")
     mgr.save_profile(cookies={"SID": "initial"}, csrf_token="init_csrf", force=True)
@@ -395,29 +426,124 @@ def test_automatic_recovery_drops_browser_result_on_disk_change(fake_credential_
         auth_revision=mgr.load_profile().revision,
     )
 
-    def browser_run_with_concurrent_user_login(
-        profile_name=None, expected_revision=None, force=False, **kwargs
-    ):
-        # User logs in while headless browser was running!
+    def fake_get_page_cookies(ws_url):
+        # User logs in on disk while headless browser was running!
         mgr.save_profile(cookies={"SID": "new_user_login"}, csrf_token="new_csrf", force=True)
-        # Attempt to save browser tokens with the expected_revision that was passed to run_headless_auth
-        save_tokens_to_cache(
-            AuthTokens(cookies={"SID": "browser_extracted_cookie"}, csrf_token="browser_csrf"),
-            profile_name=profile_name or "default",
-            expected_revision=expected_revision,
-            force=force,
-        )
-        return AuthTokens(cookies={"SID": "browser_extracted_cookie"}, csrf_token="browser_csrf")
+        return [
+            {"name": k, "value": "val", "domain": ".google.com", "path": "/"}
+            for k in ["SID", "HSID", "SSID", "APISID", "SAPISID"]
+        ]
 
-    with patch(
-        "notebooklm_tools.utils.auth_browser.run_headless_auth",
-        side_effect=browser_run_with_concurrent_user_login,
+    # Mock low-level browser interaction so NO real Chrome process is launched,
+    # but run through real _try_reload_or_headless_auth -> auth_browser -> cdp -> save_tokens_to_cache -> save_profile!
+    with (
+        patch("notebooklm_tools.utils.cdp.has_chrome_profile", return_value=True),
+        patch("notebooklm_tools.utils.firefox.has_firefox_profile", return_value=False),
+        patch("notebooklm_tools.utils.cdp.launch_chrome_process") as mock_launch,
+        patch("notebooklm_tools.utils.cdp.terminate_chrome"),
+        patch(
+            "notebooklm_tools.utils.cdp.find_existing_nlm_chrome",
+            return_value=(9223, "http://127.0.0.1:9223/json"),
+        ),
+        patch(
+            "notebooklm_tools.utils.cdp.find_or_create_notebooklm_page",
+            return_value={"webSocketDebuggerUrl": "ws://127.0.0.1:9223/devtools/page/1"},
+        ),
+        patch(
+            "notebooklm_tools.utils.cdp.get_current_url",
+            return_value="https://notebooklm.google.com/",
+        ),
+        patch("notebooklm_tools.utils.cdp.is_logged_in", return_value=True),
+        patch(
+            "notebooklm_tools.utils.cdp._wait_for_page_ready",
+            return_value=("<html>mock page</html>", True),
+        ),
+        patch("notebooklm_tools.utils.cdp.get_page_cookies", side_effect=fake_get_page_cookies),
+        patch("notebooklm_tools.utils.cdp.extract_csrf_token", return_value="browser_csrf"),
+        patch("notebooklm_tools.utils.cdp.extract_session_id", return_value="browser_session"),
+        patch("notebooklm_tools.utils.cdp.cleanup_chrome_profile_cache"),
     ):
         recovered = client._try_reload_or_headless_auth()
+        assert not mock_launch.called
 
     assert recovered is True
     # Kept the disk login, dropped the browser result!
     assert client.cookies == {"SID": "new_user_login"}
+
+
+def test_file_mode_corrupt_cookies_keeps_existing_client():
+    """In file mode, if cookies.json is corrupt or unreadable, get_client() retains existing client."""
+    from notebooklm_tools.core.auth import get_cache_path
+
+    set_auth_storage_mode("default", "file")
+    mgr = get_auth_manager("default")
+    mgr.save_profile(cookies={"SID": "good_file_cookie"}, csrf_token="good_csrf", force=True)
+
+    # Ensure root auth.json does not auto-migrate from real ~/.notebooklm-mcp/auth.json
+    root_auth = get_cache_path()
+    root_auth.write_text("{corrupt...")
+
+    # Initialize client
+    c1 = mcp_utils.get_client()
+    assert c1.cookies == {"SID": "good_file_cookie"}
+
+    # Corrupt cookies.json (simulating non-atomic write in progress)
+    mgr.cookies_file.write_text("{corrupt json ...")
+
+    # get_client() keeps existing client rather than raising ValueError("No authentication found")
+    c2 = mcp_utils.get_client()
+    assert c2 is c1
+    assert c2.cookies == {"SID": "good_file_cookie"}
+
+
+def test_update_cached_tokens_preserves_build_label_and_base_host(fake_credential_store):
+    """_update_cached_tokens with empty _bl / _base_host preserves stored values in both modes."""
+    for mode in ("file", "protected"):
+        set_auth_storage_mode("default", mode)
+        mgr = get_auth_manager("default")
+        mgr.save_profile(
+            cookies={"SID": f"{mode}_cookie"},
+            csrf_token="csrf1",
+            build_label="BL-disk",
+            base_host="notebooklm.google.com",
+            force=True,
+        )
+
+        # Client with empty _bl and empty _base_host
+        client = NotebookLMClient(
+            cookies={"SID": f"{mode}_cookie"},
+            csrf_token="csrf_new",
+            profile_name="default",
+            auth_revision=mgr.load_profile().revision,
+        )
+        assert client._bl == ""
+        assert client._base_host == ""
+
+        # Update tokens
+        client._update_cached_tokens()
+
+        # Verify metadata.json kept BL-disk and notebooklm.google.com
+        meta = json.loads(mgr.metadata_file.read_text())
+        assert meta.get("build_label") == "BL-disk"
+        assert meta.get("base_host") == "notebooklm.google.com"
+
+
+def test_login_save_profile_overwrites_base_host_with_none(fake_credential_store):
+    """Explicit login via save_profile(base_host=None) still writes None (main's behavior)."""
+    set_auth_storage_mode("default", "file")
+    mgr = get_auth_manager("default")
+    mgr.save_profile(
+        cookies={"SID": "init"},
+        csrf_token="csrf",
+        base_host="workspace.google.com",
+        force=True,
+    )
+    assert json.loads(mgr.metadata_file.read_text()).get("base_host") == "workspace.google.com"
+
+    # User logs in with personal account where base_host is None
+    mgr.save_profile(cookies={"SID": "personal"}, csrf_token="csrf", base_host=None, force=True)
+    meta = json.loads(mgr.metadata_file.read_text())
+    assert meta.get("base_host") is None
 
 
 def test_locked_store_reload_raises_typed_error(fake_credential_store):

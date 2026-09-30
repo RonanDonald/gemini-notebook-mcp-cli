@@ -182,16 +182,19 @@ def get_client() -> NotebookLMClient:
                         # Fast hot path: <0.05 ms, 0 spawns
                         return _client
             else:
-                # File mode parity
+                # File mode parity with main: keep existing _client if reload fails or returns None
                 try:
                     cached = load_cached_tokens(default_profile)
                     if cached:
                         cookies_changed = getattr(_client, "cookies", None) != cached.cookies
                         disk_is_newer = cached.extracted_at > getattr(_client, "_created_at", 0)
-                        if not (cookies_changed or disk_is_newer):
-                            return _client
+                        if cookies_changed or disk_is_newer:
+                            _client = None
                 except Exception:
                     pass
+
+                if _client is not None:
+                    return _client
 
     # Keystore work OUTSIDE _client_lock
     cached = load_cached_tokens(default_profile)

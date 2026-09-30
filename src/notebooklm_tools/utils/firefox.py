@@ -196,7 +196,7 @@ def run_headless_auth(
     timeout: int = 30,
     profile_name: str = "default",
     expected_revision: str | None = None,
-    force: bool = False,
+    force: bool | None = None,
 ) -> Any | None:
     """Refresh cached credentials from the saved Firefox profile cookie store."""
     del timeout
@@ -229,12 +229,12 @@ def run_headless_auth(
         if not validate_cookies(cookies):
             return None
         tokens = AuthTokens(cookies=cookies, extracted_at=time.time())
-        rev = save_tokens_to_cache(
-            tokens,
-            profile_name=profile_name,
-            expected_revision=expected_revision,
-            force=force,
-        )
+        save_kwargs: dict[str, Any] = {"profile_name": profile_name}
+        if expected_revision is not None:
+            save_kwargs["expected_revision"] = expected_revision
+        if force is not None:
+            save_kwargs["force"] = force
+        rev = save_tokens_to_cache(tokens, **save_kwargs)
         tokens.revision = rev
         return tokens
     except CredentialStoreError:

@@ -23,7 +23,8 @@ FIREFOX_BROWSER_KEY = "firefox"
 
 def _normalize_browser(preferred: str | None = None) -> str:
     if preferred is None:
-        preferred = get_config().auth.browser
+        auth_cfg = getattr(get_config(), "auth", None)
+        preferred = getattr(auth_cfg, "browser", "auto") if auth_cfg else "auto"
     return (preferred or "auto").lower().strip()
 
 
@@ -134,7 +135,7 @@ def run_headless_auth(
     profile_name: str = "default",
     timeout: int = 30,
     expected_revision: str | None = None,
-    force: bool = False,
+    force: bool | None = None,
 ) -> Any | None:
     """Try headless auth using the profile's saved backend, then reasonable fallbacks."""
     preferred_backend = _get_saved_browser_backend(profile_name)

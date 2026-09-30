@@ -1854,7 +1854,7 @@ def run_headless_auth(
     timeout: int = 30,
     profile_name: str = "default",
     expected_revision: str | None = None,
-    force: bool = False,
+    force: bool | None = None,
 ) -> "Any | None":
     """Run authentication in headless mode (no user interaction).
 
@@ -1982,7 +1982,7 @@ def run_headless_auth(
         save_kwargs: dict[str, Any] = {"profile_name": profile_name}
         if expected_revision is not None:
             save_kwargs["expected_revision"] = expected_revision
-        if force:
+        if force is not None:
             save_kwargs["force"] = force
         rev = save_tokens_to_cache(tokens, **save_kwargs)
         tokens.revision = rev

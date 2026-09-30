@@ -99,9 +99,13 @@ def save_tokens_to_cache(
         kwargs["profile_name"] = profile_name
     if expected_revision is not None:
         kwargs["expected_revision"] = expected_revision
-    if not force:
-        kwargs["force"] = force
-    return _core_auth.save_tokens_to_cache(tokens, silent=silent, **kwargs)
+    kwargs["force"] = force
+    try:
+        return _core_auth.save_tokens_to_cache(tokens, silent=silent, **kwargs)
+    except TypeError:
+        kwargs.pop("force", None)
+        kwargs.pop("expected_revision", None)
+        return _core_auth.save_tokens_to_cache(tokens, silent=silent, **kwargs)
 
 
 def get_cache_path() -> Path:

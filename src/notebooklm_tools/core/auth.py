@@ -216,6 +216,20 @@ def save_tokens_to_cache(
 
     with get_profile_lock(target_profile):
         disk_mode = get_raw_on_disk_storage_mode(target_profile)
+        if expected_revision is not None:
+            from notebooklm_tools.core.credential_store import (
+                StaleRevisionError,
+                get_envelope_revision,
+            )
+
+            if disk_mode == "protected":
+                enc_path = get_profile_dir(target_profile, create=False) / "credentials.enc"
+                current_rev = get_envelope_revision(enc_path) if enc_path.exists() else None
+                if current_rev != expected_revision:
+                    raise StaleRevisionError(target_profile, expected_revision, current_rev)
+            else:
+                raise StaleRevisionError(target_profile, expected_revision, None)
+
         if disk_mode == "file" and target_profile == default_profile:
             root_cache = get_cache_path()
             root_data = {
@@ -657,6 +671,9 @@ class AuthManager:
 
                 enc_path = self.profile_dir / "credentials.enc"
                 current_revision = get_envelope_revision(enc_path) if enc_path.exists() else None
+                if expected_revision is not None and current_revision != expected_revision:
+                    raise StaleRevisionError(self.profile_name, expected_revision, current_revision)
+
                 store = CredentialStore()
 
                 # Metadata-only check: if credentials.enc already exists and secrets match exactly,
@@ -676,15 +693,6 @@ class AuthManager:
                         should_write_ciphertext = True
 
                 if should_write_ciphertext:
-                    if (
-                        not force
-                        and expected_revision is not None
-                        and current_revision != expected_revision
-                    ):
-                        raise StaleRevisionError(
-                            self.profile_name, expected_revision, current_revision
-                        )
-
                     secret_payload = {
                         "cookies": cookies,
                         "csrf_token": csrf_token or "",
@@ -713,7 +721,7 @@ class AuthManager:
 
                 final_revision = get_envelope_revision(enc_path) if enc_path.exists() else None
             else:
-                if not force and expected_revision is not None:
+                if expected_revision is not None:
                     # Mode switched from protected to file; expected revision does not exist
                     raise StaleRevisionError(self.profile_name, expected_revision, None)
 

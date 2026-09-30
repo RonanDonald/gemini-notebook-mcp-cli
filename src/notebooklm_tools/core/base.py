@@ -1359,16 +1359,39 @@ class BaseClient:
         from .credential_store import CredentialStoreError, StaleRevisionError
 
         try:
+            import json
             import time
 
+            from notebooklm_tools.utils.config import get_config, get_profile_dir
+
             from .auth import AuthTokens, save_tokens_to_cache
+
+            # Merge stored build_label and base_host from metadata.json (non-secret in both modes,
+            # no keystore reads) so an empty client _bl or _base_host never overwrites disk values.
+            prof = self._profile_name or get_config().auth.default_profile
+            stored_bl = ""
+            stored_host = ""
+            meta_path = get_profile_dir(prof, create=False) / "metadata.json"
+            if meta_path.exists():
+                with contextlib.suppress(Exception):
+                    meta_data = json.loads(meta_path.read_text(encoding="utf-8"))
+                    if isinstance(meta_data, dict):
+                        stored_bl = meta_data.get("build_label") or ""
+                        stored_host = meta_data.get("base_host") or ""
+
+            final_bl = self._bl or stored_bl
+            final_host = self._base_host or stored_host
+            if not self._bl and stored_bl:
+                self._bl = stored_bl
+            if not self._base_host and stored_host:
+                self._base_host = stored_host
 
             cached = AuthTokens(
                 cookies=self.cookies,
                 csrf_token=self.csrf_token,
                 session_id=self._session_id,
-                build_label=self._bl,
-                base_host=self._base_host,
+                build_label=final_bl,
+                base_host=final_host,
                 extracted_at=time.time(),
             )
 
@@ -1400,6 +1423,11 @@ class BaseClient:
                     if reloaded.base_host:
                         self._base_host = reloaded.base_host
                     self._auth_revision = reloaded.revision
+            else:
+                logger.warning(
+                    f"Profile '{self._profile_name}' credentials changed on disk but could not be reloaded "
+                    "(profile may have been deleted or renamed)."
+                )
         except CredentialStoreError:
             raise
         except Exception as e:
@@ -1437,17 +1465,20 @@ class BaseClient:
             logger.debug("Headless refresh disabled via NOTEBOOKLM_DISABLE_HEADLESS_REFRESH")
             return False
         try:
+            import inspect
+
             from notebooklm_tools.utils.auth_browser import run_headless_auth
             from notebooklm_tools.utils.config import get_config
 
             profile_name = self._profile_name or get_config().auth.default_profile
-            try:
+            sig = inspect.signature(run_headless_auth)
+            if "expected_revision" in sig.parameters:
                 tokens = run_headless_auth(
                     profile_name=profile_name,
                     expected_revision=starting_rev,
                     force=False,
                 )
-            except TypeError:
+            else:
                 tokens = run_headless_auth(profile_name=profile_name)
             if tokens:
                 with self._state_lock:
