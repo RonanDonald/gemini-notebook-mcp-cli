@@ -92,7 +92,7 @@ def ensure_profile_ready(profile_name: str | None = None) -> None:
     from notebooklm_tools.utils.config import get_config, get_storage_dir, validate_profile_name
 
     target_profile = (profile_name or get_config().auth.default_profile).strip()
-    validate_profile_name(target_profile)
+    validate_profile_name(target_profile, strict=False)
     ops_dir = get_storage_dir() / "operations"
     marker_path = ops_dir / f"{target_profile}.json"
     if marker_path.exists():

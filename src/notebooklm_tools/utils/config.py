@@ -184,6 +184,7 @@ def get_profiles_dir(create: bool = True) -> Path:
 
 def get_profile_dir(profile_name: str = "default", create: bool = True) -> Path:
     """Get directory for a specific profile."""
+    validate_profile_name(profile_name, strict=False)
     profile_dir = get_profiles_dir(create=create) / profile_name
     if create:
         safe_mkdir(profile_dir, parents=True)
@@ -529,22 +530,23 @@ _RESERVED_DEVICE_NAMES = {
 }
 
 
-def validate_profile_name(profile_name: str) -> None:
+def validate_profile_name(profile_name: str, strict: bool = False) -> None:
     """Validate profile name for filesystem and keystore safety.
 
-    Rejects empty names, traversal, path separators, reserved device names,
-    and case-insensitive collisions with existing profiles.
+    - Base safety check (strict=False, used everywhere in file mode):
+      Rejects empty names, non-string, NUL bytes, path separators ('/' and '\\'),
+      and path traversal ('..' or '.').
+    - Strict check (strict=True, used for protected mode and keystore accounts):
+      Also rejects whitespace, enforces character set ^[a-zA-Z0-9_\\-\\.]+$,
+      reserved device names, and case-insensitive collisions with existing profiles.
     """
     import re
 
     if not profile_name or not isinstance(profile_name, str):
         raise ValueError("Profile name cannot be empty")
 
-    stripped = profile_name.strip()
-    if stripped != profile_name:
-        raise ValueError(
-            f"Profile name cannot have leading or trailing whitespace: '{profile_name}'"
-        )
+    if "\0" in profile_name:
+        raise ValueError(f"Profile name cannot contain NUL bytes: '{profile_name}'")
 
     if "/" in profile_name or "\\" in profile_name or profile_name in (".", ".."):
         raise ValueError(
@@ -555,9 +557,20 @@ def validate_profile_name(profile_name: str) -> None:
         or "../" in profile_name
         or "..\\" in profile_name
         or ".\\" in profile_name
+        or "/.." in profile_name
+        or "\\.." in profile_name
     ):
         raise ValueError(
             f"Profile name cannot contain path traversal or separators: '{profile_name}'"
+        )
+
+    if not strict:
+        return
+
+    stripped = profile_name.strip()
+    if stripped != profile_name:
+        raise ValueError(
+            f"Profile name cannot have leading or trailing whitespace: '{profile_name}'"
         )
 
     base = profile_name.split(".")[0].lower()
@@ -589,7 +602,7 @@ def get_auth_storage_mode(profile_name: str = "default") -> str:
       2. Profile's storage-mode.json marker file (missing means file, corrupt fails closed).
       3. Default 'file'.
     """
-    validate_profile_name(profile_name)
+    validate_profile_name(profile_name, strict=False)
 
     # 1. Environment override
     if env_mode := os.environ.get("NLM_AUTH_STORAGE"):
@@ -624,10 +637,20 @@ def set_auth_storage_mode(profile_name: str, mode: str) -> None:
     """Persist storage mode for a profile in a 0600 storage-mode.json marker."""
     import sys
 
-    validate_profile_name(profile_name)
     mode_clean = mode.strip().lower()
     if mode_clean not in ("protected", "file"):
         raise ValueError(f"Invalid mode '{mode}'. Must be 'protected' or 'file'")
+
+    if mode_clean == "protected":
+        try:
+            validate_profile_name(profile_name, strict=True)
+        except ValueError as exc:
+            raise ValueError(
+                f"Profile name '{profile_name}' contains characters unsupported by protected mode. "
+                f"Please rename it first with 'nlm login profile rename \"{profile_name}\" <new_name>'."
+            ) from exc
+    else:
+        validate_profile_name(profile_name, strict=False)
 
     profile_dir = get_profile_dir(profile_name)
     safe_mkdir(profile_dir, parents=True)

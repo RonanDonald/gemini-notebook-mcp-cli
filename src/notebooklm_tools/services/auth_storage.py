@@ -41,7 +41,7 @@ def get_storage_status(profile_name: str | None = None) -> StorageStatusResult:
     """Get current storage status for a profile."""
     resolved_profile = (profile_name or get_config().auth.default_profile).strip()
     try:
-        validate_profile_name(resolved_profile)
+        validate_profile_name(resolved_profile, strict=False)
     except ValueError as e:
         raise ValidationError(str(e)) from e
 
@@ -73,17 +73,24 @@ def set_storage_mode(mode: str, profile_name: str | None = None) -> StorageSetRe
       - 'set protected' is refused as not available yet (requires Task 4).
     """
     resolved_profile = (profile_name or get_config().auth.default_profile).strip()
-    try:
-        validate_profile_name(resolved_profile)
-    except ValueError as e:
-        raise ValidationError(str(e)) from e
-
     mode_clean = mode.strip().lower()
     if mode_clean not in ("protected", "file"):
         raise ValidationError(f"Invalid storage mode '{mode}'. Must be 'protected' or 'file'")
 
     if mode_clean == "protected":
+        try:
+            validate_profile_name(resolved_profile, strict=True)
+        except ValueError as exc:
+            raise ValidationError(
+                f"Profile name '{resolved_profile}' contains characters unsupported by protected mode. "
+                f"Please rename it first with 'nlm login profile rename \"{resolved_profile}\" <new_name>'."
+            ) from exc
         raise ServiceError("Protected mode is coming in a later update. No changes made.")
+
+    try:
+        validate_profile_name(resolved_profile, strict=False)
+    except ValueError as e:
+        raise ValidationError(str(e)) from e
 
     # mode == "file"
     profile_dir = get_profile_dir(resolved_profile)
@@ -129,8 +136,8 @@ def rename_profile(old_name: str, new_name: str) -> RenameProfileResult:
     from notebooklm_tools.utils.config import get_profiles_dir, save_config
 
     try:
-        validate_profile_name(old_name)
-        validate_profile_name(new_name)
+        validate_profile_name(old_name, strict=False)
+        validate_profile_name(new_name, strict=False)
     except ValueError as e:
         raise ValidationError(str(e)) from e
 

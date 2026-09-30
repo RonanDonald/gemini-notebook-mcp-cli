@@ -489,8 +489,8 @@ class CredentialStore:
         from notebooklm_tools.utils.config import ConfigError, validate_profile_name
 
         try:
-            validate_profile_name(profile_name)
-        except ConfigError as exc:
+            validate_profile_name(profile_name, strict=True)
+        except (ValueError, ConfigError) as exc:
             raise InvalidProfileNameError(str(exc)) from exc
 
     def _get_profile_lock(self, profile_name: str) -> Any:
