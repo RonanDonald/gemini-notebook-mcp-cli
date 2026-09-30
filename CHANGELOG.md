@@ -21,12 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Optional: File mode remains the default, and upgrading changes nothing until enabled.
   - Subcommands: `nlm auth storage status`, `set protected|file`, `resolve file|protected`, and `relocate`.
   - Conflict detection and interactive resolution for divergent file vs protected credentials.
-  - Fast MCP hot-path (<0.05 ms, 0 keystore spawns) with atomic in-process caching and revision checks.
+  - Fast MCP hot-path with in-memory caching (no keychain access on ordinary tool calls) and revision checks.
   - Safe multi-process token rotation with single-flight reloads and compare-and-save semantics.
 
 ### Changed
 
-- **Token rotation rate limiting** — Rotation cooldown now tracks per-profile auth-state paths rather than sharing a global unmanaged state file.
+- **Token rotation rate limiting** — Rotation cooldown is now tracked per credential file (`cookies.json` in file mode, `credentials.enc` in protected mode) instead of one shared per-process key.
 - **Environment cookies are ephemeral** — When `NOTEBOOKLM_COOKIES` is set, credentials are used for the active process only. They are never written to profile caches or OS keystores, and cannot trigger or overwrite saved-profile headless recovery.
 
 ### Downgrade Warning

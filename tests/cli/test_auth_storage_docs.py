@@ -36,17 +36,19 @@ DOC_FILES = [
     Path("docs/CLI_GUIDE.md"),
     Path("src/notebooklm_tools/data/references/command_reference.md"),
 ]
+SRC_FILES = [p for p in Path("src").rglob("*.py")]
+ALL_CHECK_FILES = DOC_FILES + SRC_FILES
 
 
 def extract_documented_storage_commands(file_path: Path) -> list[str]:
-    """Extract all 'nlm auth storage ...' command lines or snippets from a doc file."""
+    """Extract all 'nlm auth storage ...' command lines or snippets from a file."""
     content = file_path.read_text(encoding="utf-8")
     lines = []
     # Match patterns like:
     # `nlm auth storage status --profile work`
     # nlm auth storage set protected
     # > nlm auth storage set file
-    pattern = re.compile(r"nlm\s+auth\s+storage\s+([^\n`\"'\)]+)")
+    pattern = re.compile(r"nlm\s+auth\s+storage\s+([^\n`\"'\)\\]+)")
     for match in pattern.finditer(content):
         cmd_str = match.group(0).strip()
         # Clean up any trailing punctuation or markdown artifacts
@@ -56,32 +58,43 @@ def extract_documented_storage_commands(file_path: Path) -> list[str]:
 
 
 def test_no_forbidden_or_phantom_storage_commands():
-    """Ensure non-existent commands and flags are never documented."""
-    for doc in DOC_FILES:
-        content = doc.read_text(encoding="utf-8")
-        assert "nlm auth storage list" not in content, f"Found phantom 'list' command in {doc}"
+    """Ensure non-existent commands and flags are never documented or used in error text."""
+    for file_path in ALL_CHECK_FILES:
+        content = file_path.read_text(encoding="utf-8")
+        assert "nlm auth storage list" not in content, (
+            f"Found phantom 'list' command in {file_path}"
+        )
         # Ensure --force is not documented on nlm auth storage
-        assert not re.search(r"nlm\s+auth\s+storage\s+.*--force", content), (
-            f"Found phantom '--force' flag in {doc}"
+        assert not re.search(r"nlm\s+auth\s+storage\s+.*--force\b", content), (
+            f"Found phantom '--force' flag in {file_path}"
         )
         # Ensure --format is not documented on nlm auth storage
-        assert not re.search(r"nlm\s+auth\s+storage\s+.*--format", content), (
-            f"Found phantom '--format' flag in {doc}"
+        assert not re.search(r"nlm\s+auth\s+storage\s+.*--format\b", content), (
+            f"Found phantom '--format' flag in {file_path}"
+        )
+        # Ensure --verify is not documented on nlm auth storage
+        assert not re.search(r"nlm\s+auth\s+storage\s+.*--verify\b", content), (
+            f"Found phantom '--verify' flag in {file_path}"
         )
 
 
-@pytest.mark.parametrize("doc_path", DOC_FILES)
-def test_documented_storage_commands_exist(doc_path: Path):
-    """Verify all documented 'nlm auth storage ...' lines use real subcommands and flags."""
-    commands = extract_documented_storage_commands(doc_path)
-    assert len(commands) > 0, f"No nlm auth storage commands found in {doc_path}"
+@pytest.mark.parametrize("file_path", ALL_CHECK_FILES)
+def test_documented_storage_commands_exist(file_path: Path):
+    """Verify all documented or emitted 'nlm auth storage ...' lines use real subcommands and flags."""
+    commands = extract_documented_storage_commands(file_path)
+    if file_path in DOC_FILES:
+        assert len(commands) > 0, f"No nlm auth storage commands found in {file_path}"
 
     for cmd_line in commands:
-        # Strip '[OPTIONS]', angle-bracket placeholders for syntax parsing
+        # Strip '[OPTIONS]', angle-bracket placeholders, rich tags, and f-string tokens
         cleaned = re.sub(r"\[OPTIONS\]", "", cmd_line, flags=re.IGNORECASE)
-        # Normalize placeholders like <mode>, <name>, [choice] to valid dummy tokens
-        cleaned = re.sub(r"<mode>", "protected", cleaned)
-        cleaned = re.sub(r"<name>|<profile>", "default", cleaned)
+        cleaned = re.sub(
+            r"\[/?[a-z_]+\]", "", cleaned
+        )  # rich console markup tags like [cyan] or [/cyan]
+        cleaned = re.sub(r"\{[^\}]+\}", "default", cleaned)  # f-string substitutions like {profile}
+        # Normalize placeholders like <mode>, <name>, [choice], [file|protected] to valid dummy tokens
+        cleaned = re.sub(r"<mode>|\[file\|protected\]", "protected", cleaned)
+        cleaned = re.sub(r"<name>|<profile>|<old_clean>", "default", cleaned)
         cleaned = re.sub(r"\[choice\]", "file", cleaned)
 
         tokens = shlex.split(cleaned)
@@ -93,7 +106,7 @@ def test_documented_storage_commands_exist(doc_path: Path):
 
         subcmd = tokens[3]
         assert subcmd in VALID_SUBCOMMANDS, (
-            f"Documented subcommand '{subcmd}' in {doc_path} does not exist in storage_app! "
+            f"Documented subcommand '{subcmd}' in {file_path} does not exist in storage_app! "
             f"Valid subcommands are: {VALID_SUBCOMMANDS}"
         )
 
@@ -102,6 +115,6 @@ def test_documented_storage_commands_exist(doc_path: Path):
         for token in tokens[4:]:
             if token.startswith("-"):
                 assert token in valid_opts, (
-                    f"Documented flag '{token}' in '{cmd_line}' ({doc_path}) is not recognized "
+                    f"Documented flag '{token}' in '{cmd_line}' ({file_path}) is not recognized "
                     f"by subcommand '{subcmd}'. Valid flags are: {valid_opts}"
                 )

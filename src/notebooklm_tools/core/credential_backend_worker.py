@@ -175,7 +175,7 @@ class CredentialWorkerClient:
             executor.shutdown(wait=False, cancel_futures=True)
             msg = (
                 f"OS credential store operation '{op}' timed out after {self._timeout_seconds}s. "
-                "On macOS, approve the Keychain popup, or run 'nlm auth storage status --verify'."
+                "On macOS, approve the Keychain popup and retry, or run 'nlm auth storage status'."
                 if is_desktop_session()
                 else f"OS credential store operation '{op}' timed out after {self._timeout_seconds}s."
             )
@@ -217,7 +217,7 @@ class CredentialWorkerClient:
 
             msg = (
                 f"OS credential store operation '{request.get('op')}' timed out after {self._timeout_seconds}s. "
-                "On macOS, approve the Keychain popup, or run 'nlm auth storage status --verify'."
+                "On macOS, approve the Keychain popup and retry, or run 'nlm auth storage status'."
                 if is_desktop_session()
                 else f"OS credential store operation '{request.get('op')}' timed out after {self._timeout_seconds}s."
             )

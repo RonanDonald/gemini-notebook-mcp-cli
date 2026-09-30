@@ -581,9 +581,12 @@ class CredentialStore:
             from notebooklm_tools.utils.config import get_storage_dir
 
             self._storage_dir = get_storage_dir()
-        self._service_name = (
-            service_name or os.environ.get("NOTEBOOKLM_KEYSTORE_SERVICE_NAME") or SERVICE_NAME
+        env_service = (
+            os.environ.get("NOTEBOOKLM_KEYSTORE_SERVICE_NAME")
+            if os.environ.get("ALLOW_REAL_KEYSTORE")
+            else None
         )
+        self._service_name = service_name or env_service or SERVICE_NAME
         if worker_client is not None:
             self._worker = worker_client
         elif backend is not None:

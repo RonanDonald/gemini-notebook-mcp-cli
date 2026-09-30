@@ -11,6 +11,7 @@ Tests the OS credential store integration end-to-end on macOS, Linux, and Window
 Safety guarantees:
 - Always uses a unique test service name (passed via --service-name or auto-generated).
 - Always uses a temporary directory for storage (never touches ~/.notebooklm-mcp-cli).
+- Never modifies HOME on macOS (prevents Keychain popup/corruption).
 - Uses synthetic dummy data only (no real Google accounts or network calls).
 - Cleans up and verifies deletion of all keystore items created during the test.
 
@@ -32,6 +33,11 @@ import tempfile
 import time
 from pathlib import Path
 
+# Ensure src/ is on sys.path if running directly from repository checkout
+_REPO_SRC = Path(__file__).resolve().parent.parent / "src"
+if _REPO_SRC.exists() and str(_REPO_SRC) not in sys.path:
+    sys.path.insert(0, str(_REPO_SRC))
+
 
 def log_step(name: str) -> None:
     print(f"\n=== Step: {name} ===")
@@ -45,13 +51,24 @@ def log_fail(msg: str) -> None:
     print(f"  [FAIL] {msg}")
 
 
+def check_macos_home_safety() -> None:
+    """Refuse to run on macOS if HOME was pointed at a temporary directory."""
+    if sys.platform == "darwin":
+        import pwd
+
+        real_home = pwd.getpwuid(os.getuid()).pw_dir
+        current_home = os.environ.get("HOME")
+        if current_home and os.path.realpath(current_home) != os.path.realpath(real_home):
+            sys.stderr.write(
+                f"ERROR: HOME is set to '{current_home}', but real user home is '{real_home}'.\n"
+                "On macOS, changing HOME breaks login keychain access and can trigger system dialogs.\n"
+                "Do not modify HOME; isolate tests with NOTEBOOKLM_MCP_CLI_PATH and a unique service name instead.\n"
+            )
+            sys.exit(1)
+
+
 def run_worker_subcommand(args: list[str]) -> None:
     """Helper subcommands executed in child processes."""
-    if "--worker-fail-helper" in args:
-        # Simulate an unavailable helper process
-        sys.stderr.write("BackendUnavailableError: Simulated keystore unavailable\n")
-        sys.exit(1)
-
     if "--worker-replace" in args:
         # Args: --worker-replace <profile_name> <marker_value> <storage_dir> <service_name>
         idx = args.index("--worker-replace")
@@ -69,7 +86,7 @@ def run_worker_subcommand(args: list[str]) -> None:
         # Short sleep to increase chance of concurrent collision
         time.sleep(0.05)
         auth = AuthManager(profile_name)
-        current = auth.read_profile()
+        current = auth.load_profile(force_reload=True)
         updated_cookies = dict(current.cookies)
         updated_cookies["worker_marker"] = marker_value
         updated_cookies["worker_time"] = str(time.time())
@@ -113,7 +130,7 @@ def step1_lifecycle(temp_dir: Path, service_name: str) -> bool:
 
     # 2. Switch to protected mode
     res = set_storage_mode("protected", profile_name=profile_name)
-    if res.get("status") != "success":
+    if res.get("status") not in ("updated", "unchanged") or res.get("mode") != "protected":
         log_fail(f"set_storage_mode('protected') returned failure: {res}")
         return False
 
@@ -128,7 +145,7 @@ def step1_lifecycle(temp_dir: Path, service_name: str) -> bool:
     log_pass("Storage mode set to protected; status verified")
 
     # 3. Read back credentials and verify decryption
-    loaded = auth.read_profile()
+    loaded = auth.load_profile(force_reload=True)
     if loaded.cookies != initial_cookies:
         log_fail(f"Decrypted cookies mismatch: got {loaded.cookies}, expected {initial_cookies}")
         return False
@@ -160,7 +177,7 @@ def step1_lifecycle(temp_dir: Path, service_name: str) -> bool:
 
     # 5. Switch back to file mode (export)
     res_file = set_storage_mode("file", profile_name=profile_name)
-    if res_file.get("status") != "success":
+    if res_file.get("status") not in ("updated", "unchanged") or res_file.get("mode") != "file":
         log_fail(f"set_storage_mode('file') returned failure: {res_file}")
         return False
 
@@ -188,7 +205,7 @@ def step1_lifecycle(temp_dir: Path, service_name: str) -> bool:
             log_fail(f"cookies.json permissions are {oct(mode)}, expected 0600")
             return False
 
-    loaded_file = auth.read_profile()
+    loaded_file = auth.load_profile(force_reload=True)
     if loaded_file.cookies != initial_cookies:
         log_fail("Restored file mode cookies mismatch")
         return False
@@ -215,7 +232,10 @@ def step2_large_payload(temp_dir: Path, service_name: str) -> bool:
         force=True,
     )
 
-    set_storage_mode("protected", profile_name=profile_name)
+    res = set_storage_mode("protected", profile_name=profile_name)
+    if res.get("status") not in ("updated", "unchanged") or res.get("mode") != "protected":
+        log_fail(f"set_storage_mode('protected') returned failure: {res}")
+        return False
 
     enc_path = temp_dir / "profiles" / profile_name / "credentials.enc"
     if not enc_path.exists():
@@ -227,7 +247,7 @@ def step2_large_payload(temp_dir: Path, service_name: str) -> bool:
         log_fail(f"Ciphertext size is only {enc_size} bytes, expected > 85 KB")
         return False
 
-    loaded = auth.read_profile()
+    loaded = auth.load_profile(force_reload=True)
     if loaded.cookies != large_cookies:
         log_fail("Decrypted 90 KB payload does not match original data!")
         return False
@@ -271,6 +291,7 @@ def step3_concurrent_processes(temp_dir: Path, service_name: str) -> bool:
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        text=True,
     )
     p2 = subprocess.Popen(
         [
@@ -285,20 +306,21 @@ def step3_concurrent_processes(temp_dir: Path, service_name: str) -> bool:
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        text=True,
     )
 
     out1, err1 = p1.communicate(timeout=30)
     out2, err2 = p2.communicate(timeout=30)
 
     if p1.returncode != 0:
-        log_fail(f"Process 1 failed with code {p1.returncode}: {err1.decode()}")
+        log_fail(f"Process 1 failed with code {p1.returncode}: {err1}")
         return False
     if p2.returncode != 0:
-        log_fail(f"Process 2 failed with code {p2.returncode}: {err2.decode()}")
+        log_fail(f"Process 2 failed with code {p2.returncode}: {err2}")
         return False
 
     # Verify ciphertext integrity
-    loaded = auth.read_profile()
+    loaded = auth.load_profile(force_reload=True)
     marker = loaded.cookies.get("worker_marker")
     if marker not in ("PROC_1", "PROC_2"):
         log_fail(f"Corrupted or unexpected worker marker in cookies: {loaded.cookies}")
@@ -316,13 +338,18 @@ def step4_unavailable_handling(temp_dir: Path, service_name: str) -> bool:
     profile_name = "smoke_prof_unavail"
 
     from notebooklm_tools.core.auth import AuthManager
-    from notebooklm_tools.core.credential_store import CredentialStore
+    from notebooklm_tools.core.credential_store import (
+        BackendUnavailableError,
+        CredentialStore,
+        set_backend_factory,
+    )
     from notebooklm_tools.services.auth_storage import get_storage_status, set_storage_mode
     from notebooklm_tools.services.errors import ServiceError
 
     auth = AuthManager(profile_name)
+    initial_cookies = {"SID": "persist_sid"}
     auth.save_profile(
-        cookies={"SID": "persist_sid"},
+        cookies=initial_cookies,
         csrf_token="persist_csrf",
         email="unavail@example.com",
         force=True,
@@ -349,32 +376,38 @@ def step4_unavailable_handling(temp_dir: Path, service_name: str) -> bool:
                 return False
             log_pass(f"Refused with clear error: {msg}")
     else:
-        # Keystore is available: simulate an unavailable backend helper to test the refusal path
-        print("  [INFO] Keystore is available; testing refusal with simulated unavailable helper")
-        failing_helper = [sys.executable, __file__, "--worker-fail-helper"]
-        mock_store = CredentialStore(
-            storage_dir=temp_dir,
-            service_name=service_name,
-            helper_cmd=failing_helper,
-        )
-        if mock_store.is_available():
-            log_fail("mock_store.is_available() returned True for failing helper")
-            return False
+        # Keystore is available on desktop; test refusal code path with UnavailableBackend
+        print("  [INFO] Keystore is available; testing refusal with simulated unavailable backend")
 
-        # Attempt migration with failing store directly
-        from notebooklm_tools.core.auth_migration import migrate_profile_to_protected
+        class UnavailableBackend:
+            def identify(self) -> str:
+                raise BackendUnavailableError("OS credential store is unavailable or locked.")
 
+            def get_password(self, service: str, account: str) -> str | None:
+                raise BackendUnavailableError("OS credential store is unavailable or locked.")
+
+            def set_password(self, service: str, account: str, password: str) -> None:
+                raise BackendUnavailableError("OS credential store is unavailable or locked.")
+
+            def delete_password(self, service: str, account: str) -> None:
+                raise BackendUnavailableError("OS credential store is unavailable or locked.")
+
+        set_backend_factory(UnavailableBackend)
         try:
-            migrate_profile_to_protected(profile_name, store=mock_store, storage_dir=temp_dir)
-            log_fail("migrate_profile_to_protected should have raised BackendUnavailableError")
+            set_storage_mode("protected", profile_name=profile_name)
+            log_fail("set_storage_mode succeeded when backend is unavailable!")
             return False
-        except Exception as exc:
-            from notebooklm_tools.core.credential_store import BackendUnavailableError
-
-            if not isinstance(exc, BackendUnavailableError):
-                log_fail(f"Expected BackendUnavailableError, got {type(exc)}: {exc}")
+        except ServiceError as exc:
+            msg = getattr(exc, "user_message", str(exc))
+            if (
+                "unavailable or locked" not in msg.lower()
+                and "locked or unavailable" not in msg.lower()
+            ):
+                log_fail(f"Unexpected error message: {msg}")
                 return False
-            log_pass(f"Failing helper cleanly raised {type(exc).__name__}: {exc}")
+            log_pass(f"Refused with clear error: {msg}")
+        finally:
+            set_backend_factory(None)
 
     # Confirm original profile in file mode was untouched
     status = get_storage_status(profile_name=profile_name)
@@ -382,7 +415,7 @@ def step4_unavailable_handling(temp_dir: Path, service_name: str) -> bool:
         log_fail(f"Profile state altered during failed migration: {status}")
         return False
 
-    loaded = auth.read_profile()
+    loaded = auth.load_profile(force_reload=True)
     if loaded.cookies.get("SID") != "persist_sid":
         log_fail("Original cookies corrupted during failed migration attempt")
         return False
@@ -391,11 +424,15 @@ def step4_unavailable_handling(temp_dir: Path, service_name: str) -> bool:
     return True
 
 
-def step5_cleanup(temp_dir: Path, service_name: str) -> bool:
+def step5_cleanup(temp_dir: Path, service_name: str, silent: bool = False) -> bool:
     """Verify complete cleanup of all keystore items created during tests."""
-    log_step("5. Keystore Item Cleanup & Verification")
+    if not silent:
+        log_step("5. Keystore Item Cleanup & Verification")
 
-    from notebooklm_tools.core.credential_store import CredentialStore, get_installation_identity
+    from notebooklm_tools.core.credential_store import (
+        CredentialStore,
+        get_installation_identity,
+    )
 
     install_id = get_installation_identity(temp_dir).installation_id
     store = CredentialStore(storage_dir=temp_dir, service_name=service_name)
@@ -409,12 +446,15 @@ def step5_cleanup(temp_dir: Path, service_name: str) -> bool:
     for prof in profiles_to_clean:
         account = f"{install_id}:{prof}"
         with contextlib.suppress(Exception):
+            store.delete_credentials(prof)
+        with contextlib.suppress(Exception):
             store._worker.delete_password(service_name, account)
 
         # Verify deletion
         val = store._worker.get_password(service_name, account)
         if val is not None:
-            log_fail(f"Keystore item '{account}' under '{service_name}' was not deleted!")
+            if not silent:
+                log_fail(f"Keystore item '{account}' under '{service_name}' was not deleted!")
             return False
 
     # Platform-specific extra verification
@@ -426,14 +466,18 @@ def step5_cleanup(temp_dir: Path, service_name: str) -> bool:
             text=True,
         )
         if proc.returncode == 0:
-            log_fail(f"macOS Keychain still contains items for service '{service_name}'")
+            if not silent:
+                log_fail(f"macOS Keychain still contains items for service '{service_name}'")
             return False
 
-    log_pass(f"All keystore items for test service '{service_name}' verified deleted")
+    if not silent:
+        log_pass(f"All keystore items for test service '{service_name}' verified deleted")
     return True
 
 
 def main() -> int:
+    check_macos_home_safety()
+
     # First handle internal worker calls
     run_worker_subcommand(sys.argv)
 
@@ -465,6 +509,7 @@ def main() -> int:
     temp_dir = Path(temp_storage)
 
     # Export mandatory isolation environment variables
+    # (NOTE: HOME is NEVER modified here or anywhere in tests!)
     os.environ["NOTEBOOKLM_MCP_CLI_PATH"] = str(temp_dir)
     os.environ["NOTEBOOKLM_KEYSTORE_SERVICE_NAME"] = args.service_name
     os.environ["ALLOW_REAL_KEYSTORE"] = "1"
@@ -494,7 +539,7 @@ def main() -> int:
     finally:
         # Final cleanup attempt
         with contextlib.suppress(Exception):
-            step5_cleanup(temp_dir, args.service_name)
+            step5_cleanup(temp_dir, args.service_name, silent=True)
 
         if not args.keep_temp:
             shutil.rmtree(temp_storage, ignore_errors=True)
