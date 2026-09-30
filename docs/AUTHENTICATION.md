@@ -380,6 +380,8 @@ Usually, no prompt appears during normal terminal operations. However, macOS pro
 2. **Python upgrades**: If you upgrade Python (such as when Homebrew or `uv` installs a new Python release with a different binary path or signature), macOS detects the new binary signature and displays the prompt once more. Click **Always Allow** again.
 3. Once **Always Allow** is clicked for each binary, macOS silently grants access for all future operations, MCP tool calls, and background token refreshes.
 
+The prompt asks for your **Mac login password**: type it, then click **Always Allow**. If nobody answers within 60 seconds, `nlm` stops waiting and reports "approve the Keychain popup and retry", but the popup stays on screen. Dismiss it, rerun the command, and approve the new prompt.
+
 ### Where Protected Mode Cannot Work
 
 Protected mode requires an active, interactive desktop session with an unlocked OS keystore. Remote and headless sessions cannot use the keychain (Credential Manager on Windows, Keychain on macOS). Specifically, it cannot work in:

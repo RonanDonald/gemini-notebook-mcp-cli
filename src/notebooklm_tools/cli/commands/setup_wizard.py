@@ -446,7 +446,9 @@ def _check_wizard_protect_prompt() -> None:
                 return
             console.print(f"[green]✓[/green] Profile '{profile}' is now protected.")
             if sys.platform == "darwin":
-                console.print("[dim]Usually no popup. If one appears, click Always Allow.[/dim]")
+                console.print(
+                    "[dim]Usually no popup. If one appears, enter your Mac login password and click Always Allow.[/dim]"
+                )
     except Exception:
         pass
 

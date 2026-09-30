@@ -132,7 +132,7 @@ profile is relaunched. On those accounts, set
 ### Credential Storage Issues (Protected Mode)
 
 **Repeated Keychain Prompts (macOS):**
-When prompted by macOS to allow access to the keychain, click **Always Allow**. If you click "Allow", macOS will prompt on every separate command or process invocation.
+When prompted by macOS to allow access to the keychain, enter the Mac login password and click **Always Allow**. If the prompt went unanswered for 60 seconds, the command fails with "approve the Keychain popup and retry" and the popup stays open: dismiss it, rerun, and approve the new prompt. If you click "Allow", macOS will prompt on every separate command or process invocation.
 
 **Headless Linux / SSH / Docker ("OS credential store unavailable"):**
 The OS credential store requires a running D-Bus session with a Secret Service provider (e.g., `gnome-keyring`). In headless environments without D-Bus, keep your profile in plain-file mode:

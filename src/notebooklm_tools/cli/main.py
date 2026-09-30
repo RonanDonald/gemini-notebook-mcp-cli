@@ -238,7 +238,9 @@ def _maybe_prompt_protect_mode(profile: str) -> None:
             set_storage_mode(mode="protected", profile_name=profile)
             console.print(f"[green]✓[/green] Profile '{profile}' is now protected.")
             if sys.platform == "darwin":
-                console.print("[dim]Usually no popup. If one appears, click Always Allow.[/dim]")
+                console.print(
+                    "[dim]Usually no popup. If one appears, enter your Mac login password and click Always Allow.[/dim]"
+                )
 
             candidates = find_plain_backup_files(profile)
             if candidates:
@@ -1004,7 +1006,7 @@ def storage_set(
             if mode == "protected":
                 if sys.platform == "darwin":
                     console.print(
-                        "[dim]Usually no popup. If one appears, click Always Allow.[/dim]"
+                        "[dim]Usually no popup. If one appears, enter your Mac login password and click Always Allow.[/dim]"
                     )
                 from notebooklm_tools.services.auth_storage import (
                     find_plain_backup_files,
