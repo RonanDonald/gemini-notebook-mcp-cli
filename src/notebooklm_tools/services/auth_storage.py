@@ -185,9 +185,10 @@ def set_storage_mode(mode: str, profile_name: str | None = None) -> StorageSetRe
                     )
                 else:
                     raise ServiceError(
-                        f"Conflict detected for profile '{resolved_profile}': active file-mode credentials differ from protected residue. "
-                        f"Run 'nlm auth storage resolve [file|protected] --profile {resolved_profile}' to choose which copy to keep, "
-                        f"or 'nlm auth storage resolve file --discard-inaccessible --profile {resolved_profile}' to discard inaccessible residue."
+                        f"Conflict detected for profile '{resolved_profile}': active file-mode credentials differ from protected residue.\n"
+                        f"Choose which credentials to keep:\n"
+                        f"  nlm auth storage resolve file --profile {resolved_profile}: keeps your current plain-file login, deletes the encrypted leftover, stays in file mode.\n"
+                        f"  nlm auth storage resolve protected --profile {resolved_profile}: keeps the encrypted login, deletes the plain files, switches to Protected mode."
                     )
             return StorageSetResult(
                 profile=resolved_profile,
@@ -343,10 +344,17 @@ def resolve_storage_conflict(
                     if q_cand.is_dir() and q_cand.name.startswith(f"{profile_name}_"):
                         files = sorted(f.name for f in q_cand.iterdir() if f.is_file())
                         if files:
+                            mappings = []
+                            for f_name in files:
+                                if f_name == "root_auth.json":
+                                    mappings.append("root_auth.json → auth.json")
+                                else:
+                                    mappings.append(f"{f_name} → profiles/{profile_name}/{f_name}")
+                            mapping_str = ", ".join(mappings)
                             raise ServiceError(
                                 f"Cannot clear marker: quarantine folder '{q_cand}' contains credentials files "
                                 f"({', '.join(files)}). Clearing the marker could delete or abandon the only "
-                                "plaintext copy. Inspect or restore them first."
+                                f"plaintext copy. Inspect or restore them first:\n  {mapping_str}"
                             )
 
             clear_operation_marker(profile_name)

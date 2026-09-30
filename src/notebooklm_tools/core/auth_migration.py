@@ -226,20 +226,27 @@ def canonical_secrets_equal(snap1: dict[str, Any] | None, snap2: dict[str, Any] 
     return sess1 == sess2
 
 
-def capture_file_mode_snapshot(profile_name: str) -> dict[str, Any] | None:
-    """Capture snapshot of plaintext credentials without following symlinks.
+def read_file_mode_credentials_from_paths(
+    cookies_path: Path | None,
+    metadata_path: Path | None,
+    legacy_auth_path: Path | None,
+    root_auth_path: Path | None,
+    check_symlinks: bool = True,
+) -> dict[str, Any] | None:
+    """Read credentials from the four file-mode source paths applying precedence.
 
-    Aborts immediately if any secret-bearing source file is corrupt or unparseable.
-    Uses configured default_profile to check root auth.json mirror.
+    Precedence:
+    1. cookies from cookies_path
+    2. csrf/session/email/metadata from metadata_path
+    3. if cookies is None, cookies from legacy_auth_path; csrf/session/email fallback from legacy_auth_path
+    4. if cookies is None, cookies from root_auth_path; csrf/session/email fallback from root_auth_path
+
+    Returns None if no cookies are found.
+    Aborts immediately with CredentialStoreError if any existing source file is corrupt or a symlink.
+    Records 'source' diagnostic string in returned dict.
     """
-    profile_dir = get_profile_dir(profile_name, create=False)
-    cookies_path = profile_dir / "cookies.json"
-    metadata_path = profile_dir / "metadata.json"
-    legacy_auth_path = profile_dir / "auth.json"
-
-    # Reject symlinks
-    for p in (cookies_path, metadata_path, legacy_auth_path):
-        if p.is_symlink():
+    for p in (cookies_path, metadata_path, legacy_auth_path, root_auth_path):
+        if check_symlinks and p is not None and p.is_symlink():
             raise CredentialStoreError(f"Symlink rejected at {p}")
 
     cookies: Any = None
@@ -249,17 +256,21 @@ def capture_file_mode_snapshot(profile_name: str) -> dict[str, Any] | None:
     build_label: str | None = None
     base_host: str | None = None
     browser_backend: str | None = None
+    cookie_source: str | None = None
 
-    if cookies_path.exists():
+    if cookies_path and cookies_path.exists():
         try:
             cookies = json.loads(cookies_path.read_text(encoding="utf-8"))
+            if cookies:
+                cookie_source = "cookies.json"
         except Exception as exc:
             raise CredentialStoreError(
                 f"Corrupt or unreadable cookies file at {cookies_path}. "
                 "Aborting migration to prevent data loss."
             ) from exc
 
-    if metadata_path.exists():
+    has_meta_tokens = False
+    if metadata_path and metadata_path.exists():
         try:
             meta = json.loads(metadata_path.read_text(encoding="utf-8"))
             csrf_token = meta.get("csrf_token")
@@ -268,45 +279,50 @@ def capture_file_mode_snapshot(profile_name: str) -> dict[str, Any] | None:
             build_label = meta.get("build_label")
             base_host = meta.get("base_host")
             browser_backend = meta.get("browser_backend")
+            if csrf_token or session_id:
+                has_meta_tokens = True
         except Exception as exc:
             raise CredentialStoreError(
                 f"Corrupt or unreadable metadata file at {metadata_path}. "
                 "Aborting migration to prevent data loss."
             ) from exc
 
-    if cookies is None and legacy_auth_path.exists():
+    if cookies is None and legacy_auth_path and legacy_auth_path.exists():
         try:
             leg = json.loads(legacy_auth_path.read_text(encoding="utf-8"))
             cookies = leg.get("cookies")
             csrf_token = csrf_token or leg.get("csrf_token")
             session_id = session_id or leg.get("session_id")
             email = email or leg.get("email")
+            if cookies:
+                cookie_source = "profile auth.json"
         except Exception as exc:
             raise CredentialStoreError(
                 f"Corrupt or unreadable auth file at {legacy_auth_path}. "
                 "Aborting migration to prevent data loss."
             ) from exc
 
-    configured_default = get_config().auth.default_profile
-    if cookies is None and profile_name == configured_default:
-        root_auth = get_storage_dir() / "auth.json"
-        if root_auth.is_symlink():
-            raise CredentialStoreError(f"Symlink rejected at {root_auth}")
-        if root_auth.exists():
-            try:
-                root_data = json.loads(root_auth.read_text(encoding="utf-8"))
-                cookies = root_data.get("cookies")
-                csrf_token = csrf_token or root_data.get("csrf_token")
-                session_id = session_id or root_data.get("session_id")
-                email = email or root_data.get("email")
-            except Exception as exc:
-                raise CredentialStoreError(
-                    f"Corrupt or unreadable root auth file at {root_auth}. "
-                    "Aborting migration to prevent data loss."
-                ) from exc
+    if cookies is None and root_auth_path and root_auth_path.exists():
+        try:
+            root_data = json.loads(root_auth_path.read_text(encoding="utf-8"))
+            cookies = root_data.get("cookies")
+            csrf_token = csrf_token or root_data.get("csrf_token")
+            session_id = session_id or root_data.get("session_id")
+            email = email or root_data.get("email")
+            if cookies:
+                cookie_source = "root auth.json"
+        except Exception as exc:
+            raise CredentialStoreError(
+                f"Corrupt or unreadable root auth file at {root_auth_path}. "
+                "Aborting migration to prevent data loss."
+            ) from exc
 
     if not cookies:
         return None
+
+    source = cookie_source or "unknown"
+    if has_meta_tokens and source in ("cookies.json", "profile auth.json", "root auth.json"):
+        source = f"{source}+metadata.json"
 
     return {
         "cookies": cookies,
@@ -316,7 +332,29 @@ def capture_file_mode_snapshot(profile_name: str) -> dict[str, Any] | None:
         "build_label": build_label,
         "base_host": base_host,
         "browser_backend": browser_backend,
+        "source": source,
     }
+
+
+def capture_file_mode_snapshot(profile_name: str) -> dict[str, Any] | None:
+    """Capture snapshot of plaintext credentials without following symlinks.
+
+    Aborts immediately if any secret-bearing source file is corrupt or unparseable.
+    Uses configured default_profile to check root auth.json mirror.
+    """
+    profile_dir = get_profile_dir(profile_name, create=False)
+    configured_default = get_config().auth.default_profile
+    root_auth_path = (
+        (get_storage_dir() / "auth.json") if profile_name == configured_default else None
+    )
+
+    return read_file_mode_credentials_from_paths(
+        cookies_path=profile_dir / "cookies.json",
+        metadata_path=profile_dir / "metadata.json",
+        legacy_auth_path=profile_dir / "auth.json",
+        root_auth_path=root_auth_path,
+        check_symlinks=True,
+    )
 
 
 def capture_protected_snapshot(profile_name: str) -> dict[str, Any] | None:
@@ -462,6 +500,7 @@ def migrate_profile_to_protected(profile_name: str) -> dict[str, Any]:
             "key_preexisted": key_preexisted,
             "cookies_hash": cookies_hash,
             "secrets_hash": secrets_hash,
+            "source": snapshot.get("source", "unknown"),
         }
         write_operation_marker(profile_name, marker_data)
 
@@ -502,47 +541,16 @@ def migrate_profile_to_protected(profile_name: str) -> dict[str, Any]:
                 quarantined_files.append((dest, root_auth))
 
             # 4. Check if quarantined files match snapshot (data-loss prevention!)
-            # If any quarantined file changed since snapshot was captured, abort and restore!
-            re_read_cookies: Any = None
-            if (quarantine_dir / "cookies.json").exists():
-                re_read_cookies = json.loads(
-                    (quarantine_dir / "cookies.json").read_text(encoding="utf-8")
-                )
-            elif (quarantine_dir / "auth.json").exists():
-                re_read_cookies = json.loads(
-                    (quarantine_dir / "auth.json").read_text(encoding="utf-8")
-                ).get("cookies")
-            elif (quarantine_dir / "root_auth.json").exists():
-                re_read_cookies = json.loads(
-                    (quarantine_dir / "root_auth.json").read_text(encoding="utf-8")
-                ).get("cookies")
+            # If any quarantined file or live metadata changed since snapshot was captured, abort and restore!
+            re_read_snapshot = read_file_mode_credentials_from_paths(
+                cookies_path=quarantine_dir / "cookies.json",
+                metadata_path=profile_dir / "metadata.json",
+                legacy_auth_path=quarantine_dir / "auth.json",
+                root_auth_path=quarantine_dir / "root_auth.json",
+                check_symlinks=False,
+            )
 
-            re_read_csrf = snapshot.get("csrf_token", "")
-            re_read_sess = snapshot.get("session_id", "")
-            if (quarantine_dir / "auth.json").exists():
-                try:
-                    q_data = json.loads((quarantine_dir / "auth.json").read_text(encoding="utf-8"))
-                    re_read_csrf = q_data.get("csrf_token", "") or re_read_csrf
-                    re_read_sess = q_data.get("session_id", "") or re_read_sess
-                except Exception:
-                    pass
-            elif (quarantine_dir / "root_auth.json").exists():
-                try:
-                    q_data = json.loads(
-                        (quarantine_dir / "root_auth.json").read_text(encoding="utf-8")
-                    )
-                    re_read_csrf = q_data.get("csrf_token", "") or re_read_csrf
-                    re_read_sess = q_data.get("session_id", "") or re_read_sess
-                except Exception:
-                    pass
-
-            re_read_payload = {
-                "cookies": re_read_cookies,
-                "csrf_token": re_read_csrf,
-                "session_id": re_read_sess,
-            }
-
-            if compute_secrets_hash(re_read_payload) != secrets_hash:
+            if compute_secrets_hash(re_read_snapshot) != secrets_hash:
                 # Mismatch! A concurrent write happened. Abort and restore immediately!
                 for q_src, orig_dest in quarantined_files:
                     if q_src.exists():
@@ -574,12 +582,14 @@ def migrate_profile_to_protected(profile_name: str) -> dict[str, Any]:
             marker_data["phase"] = "cleanup"
             write_operation_marker(profile_name, marker_data)
 
+            storage_dir = get_storage_dir()
             removed_files: list[str] = []
             for _, orig in quarantined_files:
-                if orig == root_auth:
-                    removed_files.append("~/.notebooklm-mcp-cli/auth.json")
-                else:
-                    removed_files.append(orig.name)
+                try:
+                    rel_path = orig.relative_to(storage_dir).as_posix()
+                except ValueError:
+                    rel_path = str(orig)
+                removed_files.append(rel_path)
 
             shutil.rmtree(quarantine_dir, ignore_errors=True)
             clear_operation_marker(profile_name)

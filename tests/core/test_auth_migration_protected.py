@@ -172,8 +172,8 @@ def test_root_auth_json_removed_when_protecting_configured_default(tmp_path):
 
     res = migrate_profile_to_protected("work")
     assert res["mode"] == "protected"
-    assert res["migrated"] is True
-    assert "~/.notebooklm-mcp-cli/auth.json" in res["removed_files"]
+    assert "auth.json" in res["removed_files"]
+    assert "profiles/work/cookies.json" in res["removed_files"]
     assert not root_auth.exists()
 
     # Zero plaintext files remain in the profile dir
@@ -797,3 +797,194 @@ save_tokens_to_cache(t, profile_name="race_in_suite")
     re_auth = AuthManager("race_in_suite")
     prof = re_auth.load_profile()
     assert prof.cookies["SID"] in ("winner_sid", "initial_sid")
+
+
+def test_migrate_default_profile_with_stale_root_csrf(tmp_path):
+    """Default profile with fresh metadata CSRF and stale root auth.json CSRF migrates cleanly."""
+    prof_dir = tmp_path / "profiles" / "default"
+    prof_dir.mkdir(parents=True)
+    cookies = {"SID": "shared_sid"}
+    (prof_dir / "cookies.json").write_text(json.dumps(cookies), encoding="utf-8")
+    (prof_dir / "metadata.json").write_text(
+        json.dumps({"csrf_token": "csrf-NEW", "session_id": "sess-NEW"}),
+        encoding="utf-8",
+    )
+
+    root_auth = tmp_path / "auth.json"
+    root_auth.write_text(
+        json.dumps({"cookies": cookies, "csrf_token": "csrf-OLD", "session_id": "sess-OLD"}),
+        encoding="utf-8",
+    )
+
+    res = migrate_profile_to_protected("default")
+    assert res["mode"] == "protected"
+    assert res["migrated"] is True
+    assert "auth.json" in res["removed_files"]
+    assert "profiles/default/cookies.json" in res["removed_files"]
+    assert not root_auth.exists()
+
+    # Readback verified
+    store = CredentialStore()
+    creds = store.read_credentials("default")
+    assert creds is not None
+    assert creds["csrf_token"] == "csrf-NEW"
+    assert creds["session_id"] == "sess-NEW"
+    assert creds["cookies"] == cookies
+
+
+def test_migrate_default_profile_with_identical_root(tmp_path):
+    """Default profile with identical root auth.json migrates cleanly and unlinks root mirror."""
+    prof_dir = tmp_path / "profiles" / "default"
+    prof_dir.mkdir(parents=True)
+    cookies = {"SID": "shared_sid"}
+    (prof_dir / "cookies.json").write_text(json.dumps(cookies), encoding="utf-8")
+    (prof_dir / "metadata.json").write_text(
+        json.dumps({"csrf_token": "csrf-SAME", "session_id": "sess-SAME"}),
+        encoding="utf-8",
+    )
+
+    root_auth = tmp_path / "auth.json"
+    root_auth.write_text(
+        json.dumps({"cookies": cookies, "csrf_token": "csrf-SAME", "session_id": "sess-SAME"}),
+        encoding="utf-8",
+    )
+
+    res = migrate_profile_to_protected("default")
+    assert res["mode"] == "protected"
+    assert res["migrated"] is True
+    assert "auth.json" in res["removed_files"]
+    assert not root_auth.exists()
+
+    store = CredentialStore()
+    creds = store.read_credentials("default")
+    assert creds is not None
+    assert creds["csrf_token"] == "csrf-SAME"
+
+
+def test_migrate_default_profile_with_stale_root_cookies(tmp_path):
+    """Default profile with active fresh cookies migrates cleanly when root auth has stale cookies."""
+    prof_dir = tmp_path / "profiles" / "default"
+    prof_dir.mkdir(parents=True)
+    fresh_cookies = {"SID": "fresh_cookie_val"}
+    (prof_dir / "cookies.json").write_text(json.dumps(fresh_cookies), encoding="utf-8")
+    (prof_dir / "metadata.json").write_text(
+        json.dumps({"csrf_token": "csrf-SAME", "session_id": "sess-SAME"}),
+        encoding="utf-8",
+    )
+
+    root_auth = tmp_path / "auth.json"
+    stale_cookies = {"SID": "stale_root_cookie_val"}
+    root_auth.write_text(
+        json.dumps(
+            {"cookies": stale_cookies, "csrf_token": "csrf-SAME", "session_id": "sess-SAME"}
+        ),
+        encoding="utf-8",
+    )
+
+    res = migrate_profile_to_protected("default")
+    assert res["mode"] == "protected"
+    assert res["migrated"] is True
+    assert "auth.json" in res["removed_files"]
+    assert not root_auth.exists()
+
+    store = CredentialStore()
+    creds = store.read_credentials("default")
+    assert creds is not None
+    assert creds["cookies"] == fresh_cookies
+
+
+def test_migrate_named_default_profile_with_stale_root(tmp_path):
+    """Configured default profile 'work' migrates cleanly when root auth.json has stale CSRF."""
+    cfg = get_config()
+    cfg.auth.default_profile = "work"
+    save_config(cfg)
+
+    prof_dir = tmp_path / "profiles" / "work"
+    prof_dir.mkdir(parents=True)
+    cookies = {"SID": "work_sid"}
+    (prof_dir / "cookies.json").write_text(json.dumps(cookies), encoding="utf-8")
+    (prof_dir / "metadata.json").write_text(
+        json.dumps({"csrf_token": "csrf-WORK", "session_id": "sess-WORK"}),
+        encoding="utf-8",
+    )
+
+    root_auth = tmp_path / "auth.json"
+    root_auth.write_text(
+        json.dumps({"cookies": cookies, "csrf_token": "csrf-ROOT", "session_id": "sess-ROOT"}),
+        encoding="utf-8",
+    )
+
+    res = migrate_profile_to_protected("work")
+    assert res["mode"] == "protected"
+    assert res["migrated"] is True
+    assert "auth.json" in res["removed_files"]
+    assert not root_auth.exists()
+
+    store = CredentialStore()
+    creds = store.read_credentials("work")
+    assert creds is not None
+    assert creds["csrf_token"] == "csrf-WORK"
+    assert creds["session_id"] == "sess-WORK"
+
+
+def test_migrate_aborts_on_concurrent_metadata_modification(tmp_path, monkeypatch):
+    """If metadata.json changes during migration quarantine, migration aborts and restores source files."""
+    prof_dir = tmp_path / "profiles" / "meta_race"
+    prof_dir.mkdir(parents=True)
+    cookies_path = prof_dir / "cookies.json"
+    metadata_path = prof_dir / "metadata.json"
+    cookies = {"SID": "race_sid"}
+    cookies_path.write_text(json.dumps(cookies), encoding="utf-8")
+    metadata_path.write_text(
+        json.dumps({"csrf_token": "initial_csrf", "session_id": "initial_sess"}),
+        encoding="utf-8",
+    )
+
+    orig_move = __import__("shutil").move
+
+    def racing_move(src, dst):
+        res = orig_move(src, dst)
+        if "quarantine" in str(dst) and "cookies.json" in str(dst):
+            # Concurrent process updates metadata.json right after cookies were moved
+            metadata_path.write_text(
+                json.dumps({"csrf_token": "concurrent_csrf", "session_id": "concurrent_sess"}),
+                encoding="utf-8",
+            )
+        return res
+
+    monkeypatch.setattr("shutil.move", racing_move)
+
+    with pytest.raises(CredentialStoreError, match="modified concurrently"):
+        migrate_profile_to_protected("meta_race")
+
+    # Verification: source cookies restored, mode remains file
+    assert cookies_path.exists()
+    assert get_auth_storage_mode("meta_race") == "file"
+
+
+def test_migrate_legacy_profile_with_metadata_csrf_difference(tmp_path):
+    """Legacy profile (auth.json only, no cookies.json) with differing metadata CSRF migrates cleanly."""
+    prof_dir = tmp_path / "profiles" / "legacy_prof"
+    prof_dir.mkdir(parents=True)
+    cookies = {"SID": "legacy_sid"}
+    (prof_dir / "auth.json").write_text(
+        json.dumps({"cookies": cookies, "csrf_token": "csrf-AUTH", "session_id": "sess-AUTH"}),
+        encoding="utf-8",
+    )
+    (prof_dir / "metadata.json").write_text(
+        json.dumps({"csrf_token": "csrf-META", "session_id": "sess-META"}),
+        encoding="utf-8",
+    )
+
+    res = migrate_profile_to_protected("legacy_prof")
+    assert res["mode"] == "protected"
+    assert res["migrated"] is True
+    assert "profiles/legacy_prof/auth.json" in res["removed_files"]
+    assert not (prof_dir / "auth.json").exists()
+
+    store = CredentialStore()
+    creds = store.read_credentials("legacy_prof")
+    assert creds is not None
+    assert creds["csrf_token"] == "csrf-META"
+    assert creds["session_id"] == "sess-META"
+    assert creds["cookies"] == cookies

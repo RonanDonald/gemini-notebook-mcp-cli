@@ -57,13 +57,21 @@ def test_auth_storage_set_file_cli():
 
 
 def test_auth_storage_set_file_refuses_when_ciphertext_exists():
-    """nlm auth storage set file refuses when ciphertext cannot be decrypted and points to --discard-inaccessible."""
+    """nlm auth storage set file refuses when ciphertext exists and explains resolve options."""
     prof_dir = get_profile_dir("enc_prof")
     (prof_dir / "credentials.enc").write_bytes(b"dummy_ciphertext")
 
     res = runner.invoke(app, ["auth", "storage", "set", "file", "--profile", "enc_prof"])
     assert res.exit_code != 0
-    assert "--discard-inaccessible" in res.output
+    norm_output = " ".join(res.output.split())
+    assert (
+        "nlm auth storage resolve file --profile enc_prof: keeps your current plain-file login, deletes the encrypted leftover, stays in file mode."
+        in norm_output
+    )
+    assert (
+        "nlm auth storage resolve protected --profile enc_prof: keeps the encrypted login, deletes the plain files, switches to Protected mode."
+        in norm_output
+    )
 
 
 def test_auth_storage_set_protected_refuses_when_pending_op_exists():

@@ -213,6 +213,7 @@ def test_cli_storage_resolve_clear_marker(tmp_path):
     assert res_refuse.exit_code != 0
     assert "Cannot clear marker" in res_refuse.output
     assert "cookies.json" in res_refuse.output
+    assert "cookies.json → profiles/marker_cli/cookies.json" in res_refuse.output
 
     # Cleans up quarantine and succeeds
     (q_dir / "cookies.json").unlink()
