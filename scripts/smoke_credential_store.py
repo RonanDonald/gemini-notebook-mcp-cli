@@ -535,8 +535,8 @@ def main() -> int:
             print("  [SKIPPED] Step 3: Concurrent process safety")
             if not step4_unavailable_handling(temp_dir, args.service_name):
                 all_passed = False
-            if not step5_cleanup(temp_dir, args.service_name):
-                all_passed = False
+            # The keystore can't be reached here, so nothing was written to it.
+            print("  [SKIPPED] Step 5: Keystore cleanup (keystore unavailable, nothing written)")
         else:
             if not step1_lifecycle(temp_dir, args.service_name):
                 all_passed = False
@@ -556,8 +556,9 @@ def main() -> int:
         all_passed = False
     finally:
         # Final cleanup attempt
-        with contextlib.suppress(Exception):
-            step5_cleanup(temp_dir, args.service_name, silent=True)
+        if not refusal_only:
+            with contextlib.suppress(Exception):
+                step5_cleanup(temp_dir, args.service_name, silent=True)
 
         if not args.keep_temp:
             shutil.rmtree(temp_storage, ignore_errors=True)
