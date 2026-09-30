@@ -87,16 +87,14 @@ def get_cache_path() -> Path:
 def ensure_profile_ready(profile_name: str | None = None) -> None:
     """Ensure profile is ready for authentication operations.
 
-    Validates profile name and inspects pending operation markers.
+    Validates profile name and reconciles pending operation markers.
     """
-    from notebooklm_tools.utils.config import get_config, get_storage_dir, validate_profile_name
+    from notebooklm_tools.core.auth_migration import reconcile_pending_operations
+    from notebooklm_tools.utils.config import get_config, validate_profile_name
 
     target_profile = (profile_name or get_config().auth.default_profile).strip()
     validate_profile_name(target_profile, strict=False)
-    ops_dir = get_storage_dir() / "operations"
-    marker_path = ops_dir / f"{target_profile}.json"
-    if marker_path.exists():
-        logger.debug(f"Profile '{target_profile}' has pending operation marker at {marker_path}")
+    reconcile_pending_operations(target_profile)
 
 
 def load_cached_tokens(profile_name: str | None = None) -> AuthTokens | None:
@@ -484,6 +482,20 @@ class AuthManager:
         mode = get_auth_storage_mode(self.profile_name)
 
         if mode == "protected":
+            # If plain cookies.json also exists in protected mode, check for conflict
+            if self.cookies_file.exists():
+                from notebooklm_tools.core.auth_migration import (
+                    StorageConflictError,
+                    canonical_secrets_equal,
+                    capture_file_mode_snapshot,
+                    capture_protected_snapshot,
+                )
+
+                snap_file = capture_file_mode_snapshot(self.profile_name)
+                snap_prot = capture_protected_snapshot(self.profile_name)
+                if snap_file and snap_prot and not canonical_secrets_equal(snap_file, snap_prot):
+                    raise StorageConflictError(self.profile_name)
+
             metadata: dict[str, Any] = {}
             if self.metadata_file.exists():
                 with contextlib.suppress(Exception):
@@ -652,26 +664,32 @@ class AuthManager:
                 with contextlib.suppress(OSError):
                     legacy_auth.unlink()
         else:
-            # File mode: save cookies with restrictive permissions atomically
-            _atomic_write_json(self.cookies_file, cookies)
+            from notebooklm_tools.core.credential_store import get_profile_lock
 
-            metadata = {
-                "csrf_token": csrf_token,
-                "session_id": session_id,
-                "email": email,
-                "build_label": build_label,
-                "base_host": base_host,
-                "browser_backend": browser_backend,
-                "last_validated": datetime.now().isoformat(),
-            }
-            _atomic_write_json(self.metadata_file, metadata)
+            with get_profile_lock(self.profile_name):
+                _atomic_write_json(self.cookies_file, cookies)
 
-            # Tighten pre-existing files to 0600 on POSIX
-            if os.name == "posix":
-                for p in (self.cookies_file, self.metadata_file, self.profile_dir / "auth.json"):
-                    if p.exists():
-                        with contextlib.suppress(OSError):
-                            p.chmod(0o600)
+                metadata = {
+                    "csrf_token": csrf_token,
+                    "session_id": session_id,
+                    "email": email,
+                    "build_label": build_label,
+                    "base_host": base_host,
+                    "browser_backend": browser_backend,
+                    "last_validated": datetime.now().isoformat(),
+                }
+                _atomic_write_json(self.metadata_file, metadata)
+
+                # Tighten pre-existing files to 0600 on POSIX
+                if os.name == "posix":
+                    for p in (
+                        self.cookies_file,
+                        self.metadata_file,
+                        self.profile_dir / "auth.json",
+                    ):
+                        if p.exists():
+                            with contextlib.suppress(OSError):
+                                p.chmod(0o600)
 
         self._profile = Profile(
             name=self.profile_name,

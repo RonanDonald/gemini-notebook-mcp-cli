@@ -335,6 +335,10 @@ def migrate_auth_file(source_path: Path, dry_run: bool = True) -> str | None:
     Returns:
         Action description if migration was done, None if skipped
     """
+    configured_default = get_config().auth.default_profile
+    if get_auth_storage_mode(configured_default) == "protected":
+        return None
+
     new_auth = get_storage_dir() / "auth.json"
 
     if new_auth.exists():
@@ -450,6 +454,10 @@ def auto_migrate_if_needed() -> list[str]:
     Returns:
         List of migration actions performed (empty if nothing migrated)
     """
+    configured_default = get_config().auth.default_profile
+    if get_auth_storage_mode(configured_default) == "protected":
+        return []
+
     storage = get_storage_dir()
 
     # Check if new location already has data

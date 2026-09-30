@@ -176,6 +176,37 @@ def _check_authentication(verbose: bool) -> bool:
     console.print(f"  Default profile: [cyan]{default_profile}[/cyan]")
     console.print(f"  Profiles found: {len(profiles)}")
 
+    # Check storage mode and conflicts
+    from notebooklm_tools.services.auth_storage import get_storage_status
+
+    try:
+        storage_status = get_storage_status(default_profile)
+        console.print(f"  Storage mode: [cyan]{storage_status['mode']}[/cyan]")
+        if storage_status.get("has_conflict"):
+            console.print(
+                f"  Conflict: [bold red]yes ({storage_status.get('conflict_details')})[/bold red]"
+            )
+            console.print(
+                f"  [yellow]→[/yellow] Run [cyan]nlm auth storage resolve [file|protected] --profile {default_profile}[/cyan]"
+            )
+            ok = False
+        if storage_status.get("protected_residue"):
+            console.print(
+                "  Protected residue: [yellow]yes (credentials.enc in file mode)[/yellow]"
+            )
+            console.print(
+                f"  [yellow]→[/yellow] Run [cyan]nlm auth storage resolve file --profile {default_profile}[/cyan] to clean up"
+            )
+        if storage_status.get("has_pending_op"):
+            console.print(
+                f"  Pending operation: [bold yellow]{storage_status.get('pending_op_details')}[/bold yellow]"
+            )
+            console.print(
+                f"  [yellow]→[/yellow] Run [cyan]nlm auth storage status --profile {default_profile}[/cyan] or access profile to complete recovery"
+            )
+    except Exception as e:
+        console.print(f"  Storage status: [red]error ({e})[/red]")
+
     # Check default profile
     try:
         auth = AuthManager(default_profile)

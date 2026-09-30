@@ -870,6 +870,21 @@ def storage_status(
                 console.print(
                     "  [dim]Legacy plaintext files present (auth.json/cookies.json)[/dim]"
                 )
+            if status.get("protected_residue"):
+                console.print(
+                    f"  [yellow]Protected residue present:[/yellow] {status.get('conflict_details')}"
+                )
+            if status.get("has_conflict"):
+                console.print(
+                    f"  [bold red]Conflict detected:[/bold red] {status.get('conflict_details')}"
+                )
+                console.print(
+                    f"  [yellow]→[/yellow] Run [cyan]nlm auth storage resolve [file|protected] --profile {status['profile']}[/cyan] to resolve."
+                )
+            if status.get("has_pending_op"):
+                console.print(
+                    f"  [bold yellow]Pending operation:[/bold yellow] {status.get('pending_op_details')}"
+                )
             console.print("")
     except (ServiceError, ValidationError) as e:
         msg = getattr(e, "user_message", str(e))
@@ -908,9 +923,7 @@ def storage_set(
         if json_output:
             print_json(res)
         else:
-            console.print(
-                f"[green]✓[/green] Storage mode set to '[cyan]{res['mode']}[/cyan]' for profile '{res['profile']}'."
-            )
+            console.print(f"[green]✓[/green] {res['message']}")
     except (ServiceError, ValidationError) as e:
         msg = getattr(e, "user_message", str(e))
         if json_output:
@@ -919,6 +932,77 @@ def storage_set(
             console.print(f"[red]Error:[/red] {msg}")
         raise typer.Exit(1) from e
     except ConfigError as e:
+        if json_output:
+            print_json({"error": str(e)})
+        else:
+            console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1) from e
+
+
+@storage_app.command("resolve")
+def storage_resolve(
+    choice: str = typer.Argument(..., help="Storage mode to resolve to: 'file' or 'protected'"),
+    profile: str = typer.Option(
+        None,
+        "--profile",
+        "-p",
+        help="Profile to resolve (default: configured default profile)",
+    ),
+    discard_inaccessible: bool = typer.Option(
+        False,
+        "--discard-inaccessible",
+        help="Discard inaccessible ciphertext and reset to file mode without exporting",
+    ),
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON"),
+) -> None:
+    """Resolve a credential storage conflict or discard inaccessible credentials."""
+    from notebooklm_tools.cli.formatters import print_json
+    from notebooklm_tools.services.auth_storage import resolve_storage_conflict
+    from notebooklm_tools.services.errors import ServiceError, ValidationError
+    from notebooklm_tools.utils.config import ConfigError, get_config
+
+    resolved_profile = (profile or get_config().auth.default_profile).strip()
+    try:
+        res = resolve_storage_conflict(
+            profile_name=resolved_profile,
+            choice=choice,
+            discard_inaccessible=discard_inaccessible,
+        )
+        if json_output:
+            print_json(res)
+        else:
+            console.print(f"[green]✓[/green] {res['message']}")
+    except (ServiceError, ValidationError) as e:
+        msg = getattr(e, "user_message", str(e))
+        if json_output:
+            print_json({"error": msg})
+        else:
+            console.print(f"[red]Error:[/red] {msg}")
+        raise typer.Exit(1) from e
+    except ConfigError as e:
+        if json_output:
+            print_json({"error": str(e)})
+        else:
+            console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1) from e
+
+
+@storage_app.command("relocate")
+def storage_relocate(
+    json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON"),
+) -> None:
+    """Relocate installation identity after moving the storage directory."""
+    from notebooklm_tools.cli.formatters import print_json
+    from notebooklm_tools.services.auth_storage import relocate_storage
+
+    try:
+        res = relocate_storage()
+        if json_output:
+            print_json(res)
+        else:
+            console.print(f"[green]✓[/green] {res['message']}")
+            console.print(f"  Installation ID: [cyan]{res['installation_id']}[/cyan]")
+    except Exception as e:
         if json_output:
             print_json({"error": str(e)})
         else:

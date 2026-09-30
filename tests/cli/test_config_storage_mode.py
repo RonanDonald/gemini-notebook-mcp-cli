@@ -57,24 +57,37 @@ def test_auth_storage_set_file_cli():
 
 
 def test_auth_storage_set_file_refuses_when_ciphertext_exists():
-    """nlm auth storage set file refuses when ciphertext exists until protected transitions are supported."""
+    """nlm auth storage set file refuses when ciphertext cannot be decrypted and points to --discard-inaccessible."""
     prof_dir = get_profile_dir("enc_prof")
     (prof_dir / "credentials.enc").write_bytes(b"dummy_ciphertext")
 
     res = runner.invoke(app, ["auth", "storage", "set", "file", "--profile", "enc_prof"])
     assert res.exit_code != 0
-    assert "is coming in a later update" in res.output
+    assert "--discard-inaccessible" in res.output
 
 
-def test_auth_storage_set_protected_refuses_until_supported():
-    """nlm auth storage set protected refuses with 'coming in a later update'."""
+def test_auth_storage_set_protected_refuses_when_pending_op_exists():
+    """nlm auth storage set protected refuses when a pending operation exists."""
+    from notebooklm_tools.core.auth_migration import write_operation_marker
+
+    write_operation_marker(
+        "test_prof", {"version": 1, "profile": "test_prof", "phase": "quarantining"}
+    )
     res = runner.invoke(app, ["auth", "storage", "set", "protected", "--profile", "test_prof"])
     assert res.exit_code != 0
-    assert "coming in a later update" in res.output
+    assert "pending" in res.output.lower() or "unfinished" in res.output.lower()
 
-    # Must write nothing
+
+def test_auth_storage_set_protected_cli():
+    """nlm auth storage set protected switches mode to protected."""
+    res = runner.invoke(app, ["auth", "storage", "set", "protected", "--profile", "test_prof"])
+    assert res.exit_code == 0
+    assert "protected" in res.output
+
+    # Marker exists
     marker = get_profile_dir("test_prof") / "storage-mode.json"
-    assert not marker.exists()
+    assert marker.exists()
+    assert json.loads(marker.read_text(encoding="utf-8"))["mode"] == "protected"
 
 
 def test_corrupt_config_cli_error_message_and_json():

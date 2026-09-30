@@ -12,6 +12,7 @@ import json
 import os
 import secrets
 import sys
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -447,6 +448,33 @@ def get_current_backend_id() -> str:
     return backend_id
 
 
+_LOCKS_CACHE: dict[Path, Any] = {}
+_LOCKS_MUTEX = threading.Lock()
+
+
+def get_profile_lock(profile_name: str, storage_dir: Path | None = None) -> Any:
+    """Return a shared FileLock instance for the profile within the process.
+
+    Sharing the FileLock instance enables re-entrancy within the same process
+    while maintaining OS-level exclusion across processes.
+    """
+    from filelock import FileLock
+
+    if storage_dir is None:
+        from notebooklm_tools.utils.config import get_storage_dir
+
+        storage_dir = get_storage_dir()
+
+    locks_dir = storage_dir / "locks"
+    locks_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = (locks_dir / f"{profile_name}.lock").resolve()
+
+    with _LOCKS_MUTEX:
+        if lock_path not in _LOCKS_CACHE:
+            _LOCKS_CACHE[lock_path] = FileLock(lock_path, timeout=LOCK_TIMEOUT_SECONDS)
+        return _LOCKS_CACHE[lock_path]
+
+
 class CredentialStore:
     """Core credential store for Protected mode.
 
@@ -494,12 +522,7 @@ class CredentialStore:
             raise InvalidProfileNameError(str(exc)) from exc
 
     def _get_profile_lock(self, profile_name: str) -> Any:
-        from filelock import FileLock
-
-        locks_dir = self._storage_dir / "locks"
-        locks_dir.mkdir(parents=True, exist_ok=True)
-        lock_path = locks_dir / f"{profile_name}.lock"
-        return FileLock(lock_path, timeout=LOCK_TIMEOUT_SECONDS)
+        return get_profile_lock(profile_name, self._storage_dir)
 
     def _check_symlink(self, path: Path) -> None:
         if path.is_symlink():
@@ -555,6 +578,24 @@ class CredentialStore:
             return None
         except Exception:
             return None
+
+    def is_available(self) -> bool:
+        """Check if the OS credential backend is available without hanging."""
+        try:
+            backend_id = self._worker.identify()
+            return bool(backend_id and backend_id != "unsupported")
+        except Exception:
+            return False
+
+    def has_key(self, profile_name: str) -> bool:
+        """Check if an encryption key exists in the keystore for the given profile."""
+        try:
+            identity = get_installation_identity(self._storage_dir, worker=self._worker)
+            account_id = f"{identity.installation_id}:{profile_name}"
+            pwd = self._worker.get_password(SERVICE_NAME, account_id)
+            return pwd is not None
+        except Exception:
+            return False
 
     def read_credentials(self, profile_name: str) -> dict[str, Any] | None:
         """Read and decrypt credentials for a protected profile."""
