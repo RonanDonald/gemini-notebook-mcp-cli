@@ -18,7 +18,9 @@
 > 💡 You can also use the 'nlm setup' wizard and select the 'Credentials Protection' option in the wizard
 > 
 > Optional: nothing changes unless you turn it on. Servers, cron, Docker and SSH setups can keep the plain file.
-> [How it works](docs/AUTHENTICATION.md#protected-storage)
+> 📖 [How it works](docs/AUTHENTICATION.md#protected-storage) · 📺 [Watch this short video](https://www.youtube.com/shorts/7ZmF_lwJh3M)
+>
+> 🤖 Fun fact: this video was created by an agent using the gemini-notebook-mcp.
 
 > **Note:** Personal/consumer accounts are tested regularly. Gemini Notebook Enterprise support is experimental. The documented `notebook.cloud.google.com` host has been live-verified with a project-qualified `global` deployment; other Enterprise host variants may require additional validation.
 
