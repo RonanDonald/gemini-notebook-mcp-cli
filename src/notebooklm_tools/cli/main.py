@@ -944,9 +944,12 @@ def storage_status(
             if status["has_ciphertext"]:
                 console.print("  [dim]Ciphertext envelope present (credentials.enc)[/dim]")
             if status["has_legacy"]:
-                console.print(
-                    "  [dim]Legacy plaintext files present (auth.json/cookies.json)[/dim]"
-                )
+                if status["mode"] == "file":
+                    console.print("  [dim]Plain login files (auth.json/cookies.json)[/dim]")
+                else:
+                    console.print(
+                        "  [yellow]Plain login files also present (auth.json/cookies.json)[/yellow]"
+                    )
             if status.get("protected_residue"):
                 console.print(
                     f"  [yellow]Protected residue present:[/yellow] {status.get('conflict_details')}"
