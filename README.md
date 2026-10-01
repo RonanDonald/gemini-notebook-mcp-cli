@@ -66,6 +66,7 @@ Gemini Notebook — no config files to edit. Pick an option with the arrow keys:
 | **Add the MCP to my tools/agents** | Tick the tools to connect (Space), then Enter. Nothing is pre-selected. Connections still using the old `notebooklm-mcp` name appear under **Needs a fix** and are renamed to `gemini-notebook-mcp`, keeping their settings. Then it offers the skill. |
 | **Add the skill to my tools/agents** | Installs the skill that teaches your AI how to use Gemini Notebook well — for **All my projects** (default) or **Just this folder**. Upgrades are pre-ticked; older versions are only replaced after you confirm. |
 | **Remove an MCP or skill** | Lists what's installed, grouped into MCP connections and skills. Nothing is pre-selected, and each group needs its own confirmation. |
+| **Credential protection** | Protect your saved logins in your OS keystore, or restore them to plain files. It only offers what applies: *Protect* when a login is plain, *Restore* when one is protected. With several logins you get a checkbox picker. |
 | **Copy MCP setup for a tool not listed** | Copies a ready-to-paste JSON snippet to your clipboard. **Advanced options** switch to uvx, the bare command, or entry-only JSON. |
 
 - **Esc** goes back from any screen (and quits from the main menu).
@@ -135,7 +136,7 @@ Then use natural language: _"Create a notebook about quantum computing and gener
 
 - **[Getting Started](docs/GETTING_STARTED.md)** — Install, login, agent setup, and migration from another Gemini Notebook MCP
 - **[CLI Guide](docs/CLI_GUIDE.md)** — Complete command reference
-- **[MCP Guide](docs/MCP_GUIDE.md)** — All 50 MCP tools with examples
+- **[MCP Guide](docs/MCP_GUIDE.md)** — All 53 MCP tools with examples
 - **[Authentication](docs/AUTHENTICATION.md)** — Setup and troubleshooting
 - **[Remote MCP](docs/REMOTE_MCP.md)** — Web/mobile connector feasibility, security, and authentication limitations
 - **[API Reference](docs/API_REFERENCE.md)** — Internal API docs for contributors
@@ -337,6 +338,8 @@ nlm login --manual --file cookies.txt
 nlm login --provider openclaw --cdp-url http://127.0.0.1:18800
 ```
 
+New profiles ask where to keep the saved login **before** the browser opens: **Protected** (encrypted, key in your OS keystore, recommended) or a plain file. Scripts can skip the question with `nlm login --storage protected` (or `--storage file`). Existing profiles keep their mode; change it any time in `nlm setup` → **Credential protection**.
+
 **Profile management:**
 
 ```bash
@@ -346,6 +349,8 @@ nlm login profile list               # List all profiles with email addresses
 nlm login profile delete <profile>   # Delete a profile
 nlm login profile rename <old> <new> # Rename a profile
 ```
+
+**From an MCP-only app (for example Claude CoWork):** ask the AI to use the `profile` tool. It can list your accounts, switch for the session, and, only if you ask, make one your saved default.
 
 **Unattended / scheduled refresh:**
 
@@ -424,7 +429,7 @@ For detailed instructions and troubleshooting, see **[docs/AUTHENTICATION.md](do
 
 ## MCP Configuration
 
-> **⚠️ Context Window Warning:** This MCP provides **50 tools**. Disable it when not using Gemini Notebook to preserve context. In Claude Code: `@gemini-notebook-mcp` to toggle. To keep it on but expose only a subset, see [Selective tool exposure](docs/MCP_GUIDE.md#selective-tool-exposure).
+> **⚠️ Context Window Warning:** This MCP provides **53 tools**. Disable it when not using Gemini Notebook to preserve context. In Claude Code: `@gemini-notebook-mcp` to toggle. To keep it on but expose only a subset, see [Selective tool exposure](docs/MCP_GUIDE.md#selective-tool-exposure).
 
 ### Automatic Setup (Recommended)
 

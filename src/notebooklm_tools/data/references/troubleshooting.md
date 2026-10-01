@@ -124,6 +124,8 @@ profile is relaunched. On those accounts, set
    nlm login switch <profile-name>
    ```
 
+   From an MCP-only app, use the `profile` tool instead (`action="switch"`).
+
 5. **Check current session:**
    ```bash
    nlm login --check

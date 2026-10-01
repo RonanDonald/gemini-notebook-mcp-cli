@@ -730,3 +730,76 @@ def remove_plain_backup_files(files: list[Path]) -> list[Path]:
             except OSError:
                 pass
     return removed
+
+
+def saved_profile_names() -> list[str]:
+    """Sorted names of profiles that really hold saved credentials (no marker-only ghosts)."""
+    from notebooklm_tools.services.auth import AuthManager
+
+    return sorted(n for n in AuthManager.list_profiles() if AuthManager(n).profile_exists())
+
+
+def keystore_available() -> bool:
+    """Fresh keystore probe (writes and deletes a throwaway entry). Call only right before
+    an explicit, user-requested protect action — never from listing or status code."""
+    from notebooklm_tools.core.credential_store import CredentialStore
+
+    return CredentialStore().is_available()
+
+
+def record_protect_choice(profile_name: str, protected: bool) -> None:
+    """Remember the user's protect answer so no protection nudge asks about this profile again."""
+    from notebooklm_tools.core.notices import record_protect_answer
+
+    record_protect_answer(profile_name, "yes" if protected else "no")
+
+
+def protected_name_problem(profile_name: str) -> str | None:
+    """Why this name can't be a protected profile, or None if it can."""
+    try:
+        validate_profile_name(profile_name, strict=True)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
+def suggest_protected_name(profile_name: str) -> str | None:
+    """A protected-mode-safe name derived from an unusable one (my work -> my-work), or None.
+
+    None when nothing usable is left, the suggestion is itself rejected (reserved name,
+    case-insensitive clash with a saved profile), or a profile with that name already exists.
+    """
+    import re
+
+    candidate = re.sub(r"[^A-Za-z0-9_.-]+", "-", (profile_name or "").strip()).strip("-.")
+    if not candidate or protected_name_problem(candidate) is not None:
+        return None
+    if candidate in saved_profile_names():
+        return None
+    return candidate
+
+
+def is_desktop_session() -> bool:
+    """Cheap hints only (no keystore probe): False on SSH, containers, headless Linux."""
+    from notebooklm_tools.core.credential_backend_worker import is_definitely_non_desktop
+
+    return not is_definitely_non_desktop()
+
+
+def mark_new_profile_protected(profile_name: str) -> None:
+    """Mark a not-yet-saved profile as protected so its first save goes to the keystore."""
+    set_auth_storage_mode(profile_name, "protected")
+
+
+def discard_unsaved_profile(profile_name: str) -> None:
+    """Undo mark_new_profile_protected after a failed first login. Never touches saved credentials."""
+    from notebooklm_tools.services.auth import AuthManager
+
+    if AuthManager(profile_name).profile_exists():
+        return
+    pdir = get_profile_dir(profile_name, create=False)
+    marker = pdir / "storage-mode.json"
+    if marker.exists():
+        marker.unlink()
+    with contextlib.suppress(OSError):
+        pdir.rmdir()  # only succeeds when empty

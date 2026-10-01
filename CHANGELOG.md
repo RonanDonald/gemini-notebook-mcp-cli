@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] - 2026-10-01
+
+> 🔒 **Choose how your login is stored before you sign in**
+> New logins now ask "Protected (recommended) or plain file?" *before* the browser opens, so a protected login never starts life as a plain file. `nlm setup` also gets a "Credential protection" menu item to protect or restore saved logins at any time.
+
+### Added
+
+- **Credential protection in `nlm setup`.** New main-menu item. Offers "Protect saved logins" when any login is plain, and "Restore protected logins to plain files" only when something is protected. With several logins you get the same checkbox picker as `nlm auth storage set`. The existing startup question stays.
+- **`nlm login` asks plain vs protected first (new profiles only).** Only in a real terminal on a desktop with a working keystore; SSH, containers and headless Linux stay on plain files without asking. If you type a name protected mode can't use (like `john@work.com` or `my work`), the question offers a working name instead (`john-work.com`, `my-work`) and lets you keep your original name as a plain file, all before the browser opens. Picking "protected" means no protection prompts or tips afterwards. Picking "plain" is respected: that profile is never nudged again.
+- **`nlm login --storage protected|file`.** Skips the question for a new profile (for scripts). Fails loudly instead of silently downgrading when the keystore is unavailable, and refuses to change the mode of an existing profile (use `nlm auth storage set`).
+- **MCP `profile` tool.** `action=list` shows saved accounts with email, storage mode and which is active; `action=status` shows storage details; `action=switch` changes the account for every later tool call until the MCP server restarts. `make_default=true` also saves it as your default for the CLI and future sessions. Built for apps with no CLI, like Claude CoWork.
+- **MCP `alias` tool, and aliases work everywhere.** Any tool's `notebook_id` now accepts an alias set with `nlm alias set` or the new tool.
+- **MCP `chat_save_to_note`** (CLI: `nlm chats to-note`) and **`pipeline` action `create`** (CLI: `nlm pipeline create`).
+- **`server_info` lists saved profiles** with email, storage mode and storage problems, plus which profile is active. Metadata only: it never opens the OS keystore.
+- **Active-account note.** While a profile switch is active and several profiles exist, every MCP tool result carries `active_profile_note` naming the account in use, because apps like Claude Desktop share one MCP server across chats.
+- **CLI-to-MCP parity test.** Every CLI command must map to an MCP tool or be on the deliberate CLI-only list, so gaps can't creep back.
+
+### Fixed
+
+- The one-time MCP "protect your login" notice no longer appears for a protected or already-answered active profile (it could after a profile switch).
+- The root `auth.json` backup and storage migrations always follow the saved default profile, never a temporary session switch.
+- `nlm auth storage set` and the wizard no longer list leftover empty profile folders.
+- Pressing Ctrl+C (or a failed or timed-out sign-in) during `nlm login` now closes the automation Chrome window it opened, instead of leaving it running for the next login to reuse.
+
+### Changed
+
+- Existing profiles behave as before: the after-login "Protect…?" question still appears for plain profiles that never answered.
+- Deliberately CLI-only (unsafe or interactive over MCP): `login`, `setup`, `skill`, profile delete/rename, `auth storage set/resolve/relocate`, `config`, `chat start`.
+
+### Removed
+
+- Nothing removed.
+
 ## [0.14.0] - 2026-09-30
 
 > 🔒 **New: Protected login storage (recommended)**
