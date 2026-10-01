@@ -170,6 +170,9 @@ def _isolate_home(monkeypatch, tmp_path_factory, request):
     fake_home = tmp_path_factory.mktemp("fake_home")
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("USERPROFILE", str(fake_home))
+    # Linux tools resolve config/data/cache from XDG_* before HOME; keep them in the fake home too
+    for var in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"):
+        monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(
         Path,
         "home",
@@ -266,6 +269,21 @@ def _guard_credential_store(request, monkeypatch):
     finally:
         keyring.set_keyring(old_keyring)
         set_backend_factory(old_factory)
+
+
+@pytest.fixture
+def pretend_desktop(monkeypatch):
+    """Make the 'is this an SSH/container/headless session?' hint say no.
+
+    CI runs on headless Linux, where Protected mode invites are (correctly)
+    suppressed. Tests that check an invite appears need a desktop session.
+    """
+    monkeypatch.delenv("SSH_CONNECTION", raising=False)
+    monkeypatch.delenv("SSH_TTY", raising=False)
+    monkeypatch.setattr(
+        "notebooklm_tools.core.credential_backend_worker.is_definitely_non_desktop",
+        lambda: False,
+    )
 
 
 @pytest.fixture

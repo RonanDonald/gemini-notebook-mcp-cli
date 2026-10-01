@@ -117,7 +117,7 @@ def test_failed_cached_probe_does_not_block_explicit_set_protected(
     assert get_protect_answer("default") == "yes"
 
 
-def test_wizard_reports_failed_protect_instead_of_hiding_it(monkeypatch, capsys):
+def test_wizard_reports_failed_protect_instead_of_hiding_it(monkeypatch, capsys, pretend_desktop):
     """Wizard 'Yes' + failed switch must print the error, not swallow it."""
     import notebooklm_tools.cli.commands.setup_wizard as wizard
 

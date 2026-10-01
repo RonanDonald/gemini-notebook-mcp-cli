@@ -48,7 +48,9 @@ def test_50_cli_commands_in_ssh_session_zero_probes(monkeypatch, fake_credential
     assert probe_calls == 0
 
 
-def test_cli_notice_appears_on_tty_when_eligible(monkeypatch, fake_credential_store, capsys):
+def test_cli_notice_appears_on_tty_when_eligible(
+    monkeypatch, fake_credential_store, capsys, pretend_desktop
+):
     """CLI notice displays once on TTY when keystore is available and profile is file mode."""
     auth = AuthManager("default")
     auth.save_profile(cookies={"SID": "test_sid"}, email="user@example.com")

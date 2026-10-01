@@ -30,7 +30,9 @@ def setup_env(tmp_path, monkeypatch, fake_credential_store):
     reset_config()
 
 
-def test_100_mcp_tool_calls_zero_tool_call_probes_and_no_delay(monkeypatch, fake_credential_store):
+def test_100_mcp_tool_calls_zero_tool_call_probes_and_no_delay(
+    monkeypatch, fake_credential_store, pretend_desktop
+):
     """100 MCP tool calls must never probe keystore inside tool calls and have 0 delay."""
     auth = AuthManager("default")
     auth.save_profile(cookies={"SID": "test_sid"}, email="user@example.com")
@@ -72,7 +74,7 @@ def test_100_mcp_tool_calls_zero_tool_call_probes_and_no_delay(monkeypatch, fake
     assert elapsed < 1.0
 
 
-def test_user_notice_sent_once_across_restarts(monkeypatch, fake_credential_store):
+def test_user_notice_sent_once_across_restarts(monkeypatch, fake_credential_store, pretend_desktop):
     """The AI receives the notice exactly once per install, even after a server restart."""
     auth = AuthManager("default")
     auth.save_profile(cookies={"SID": "test_sid"}, email="user@example.com")
