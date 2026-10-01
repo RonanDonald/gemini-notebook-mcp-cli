@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The first-ever creation of `installation.json` (the install identity used for protected storage) is now atomic: it is written to a temporary file and renamed into place, so a second process starting at the same moment can never read a half-written file and fail with "Corrupt or unreadable installation.json". This only affected a first protected write racing another process; it also made one CI test intermittently fail.
+
 ## [0.15.0] - 2026-10-01
 
 > 🔒 **Choose how your login is stored before you sign in**
