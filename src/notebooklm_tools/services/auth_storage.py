@@ -601,18 +601,73 @@ def rename_profile(old_name: str, new_name: str) -> RenameProfileResult:
     if new_dir.exists():
         raise ConflictError(f"Profile '{new_clean}' already exists")
 
-    # Move profile directory directly to preserve all files and avoid env bleed
-    try:
-        old_dir.rename(new_dir)
-    except OSError:
-        import shutil
+    storage_dir = get_storage_dir()
 
-        shutil.move(str(old_dir), str(new_dir))
+    def _browser_profile_dir(name: str) -> Path:
+        # Preserve the legacy default-profile location when it already exists.
+        legacy = storage_dir / "chrome-profile"
+        if name == "default" and legacy.exists():
+            return legacy
+        return storage_dir / "chrome-profiles" / name
 
+    old_browser_dir = _browser_profile_dir(old_clean)
+    new_browser_dir = _browser_profile_dir(new_clean)
+    if old_browser_dir.exists() and new_browser_dir.exists():
+        raise ConflictError(
+            f"Browser profile '{new_clean}' already exists; "
+            "refusing to split auth and browser identity"
+        )
+
+    def _move_dir(source: Path, destination: Path) -> None:
+        try:
+            source.rename(destination)
+        except OSError:
+            import shutil
+
+            shutil.move(str(source), str(destination))
+
+    browser_moved = False
+    auth_moved = False
     is_default = config.auth.default_profile == old_clean
-    if is_default:
-        config.auth.default_profile = new_clean
-        save_config(config)
+
+    try:
+        # Keep the saved browser identity aligned with the auth profile. Move it
+        # first so an auth-rename failure can restore the browser directory.
+        if old_browser_dir.exists():
+            new_browser_dir.parent.mkdir(parents=True, exist_ok=True)
+            _move_dir(old_browser_dir, new_browser_dir)
+            browser_moved = True
+
+        _move_dir(old_dir, new_dir)
+        auth_moved = True
+
+        if is_default:
+            config.auth.default_profile = new_clean
+            save_config(config)
+    except Exception as exc:
+        rollback_errors: list[str] = []
+
+        if is_default:
+            config.auth.default_profile = old_clean
+
+        if auth_moved and new_dir.exists() and not old_dir.exists():
+            try:
+                _move_dir(new_dir, old_dir)
+            except Exception as rollback_exc:
+                rollback_errors.append(f"auth profile: {rollback_exc}")
+
+        if browser_moved and new_browser_dir.exists() and not old_browser_dir.exists():
+            try:
+                old_browser_dir.parent.mkdir(parents=True, exist_ok=True)
+                _move_dir(new_browser_dir, old_browser_dir)
+            except Exception as rollback_exc:
+                rollback_errors.append(f"browser profile: {rollback_exc}")
+
+        if rollback_errors:
+            raise ServiceError(
+                "Profile rename failed and rollback was incomplete: " + "; ".join(rollback_errors)
+            ) from exc
+        raise
 
     msg = f"Renamed profile '{old_clean}' to '{new_clean}'"
     if is_default:
