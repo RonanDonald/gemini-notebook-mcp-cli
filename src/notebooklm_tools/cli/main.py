@@ -1281,6 +1281,23 @@ def main(
         console.print(ctx.get_help())
 
 
+def _maybe_show_storage_tip(argv: list[str]) -> None:
+    """Show the one-time Protected mode tip after a successful command.
+
+    Skipped after commands that already deal with storage or ask the question
+    themselves (auth storage, login, setup). Never lets a failure escape.
+    """
+    import contextlib
+
+    words = [a for a in argv if not a.startswith("-")]
+    if words[:2] == ["auth", "storage"] or words[:1] in (["login"], ["setup"]):
+        return
+    with contextlib.suppress(Exception):
+        from notebooklm_tools.cli.utils import print_storage_mode_notification
+
+        print_storage_mode_notification()
+
+
 def cli_main() -> None:
     """Main CLI entry point with error handling."""
     import sys
@@ -1290,10 +1307,13 @@ def cli_main() -> None:
     configure_stdio_utf8_on_windows()
 
     try:
-        app()
-        from notebooklm_tools.cli.utils import print_storage_mode_notification
-
-        print_storage_mode_notification()
+        try:
+            app()
+        except SystemExit as exit_exc:
+            # Typer always exits via SystemExit; show the tip only after success.
+            if exit_exc.code in (0, None):
+                _maybe_show_storage_tip(sys.argv[1:])
+            raise
     except Exception as e:
         # Import here to avoid circular dependencies
         from notebooklm_tools.core.errors import ClientAuthenticationError

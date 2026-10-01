@@ -265,7 +265,7 @@ def print_storage_mode_notification() -> None:
 
     Order of checks:
     (a) "already shown/answered" flag: is_cli_notice_shown()
-    (b) TTY: sys.stderr.isatty() or sys.stdout.isatty()
+    (b) TTY: sys.stderr.isatty() (the tip goes to stderr so piped stdout stays clean)
     (c) cheap session hints via should_offer_protection() (skip SSH, container, headless Linux)
     (d) file-mode check: default profile must be configured and in file mode
     (e) real probe at most once per install (30-day cache in notices.json)
@@ -281,7 +281,7 @@ def print_storage_mode_notification() -> None:
         return
 
     # (b) TTY check
-    if not (sys.stderr.isatty() or sys.stdout.isatty()):
+    if not sys.stderr.isatty():
         return
 
     from notebooklm_tools.core.credential_store import CredentialStore
@@ -303,8 +303,9 @@ def print_storage_mode_notification() -> None:
     if not store.should_offer_protection(profile_name=profile):
         return
 
-    console.print(
+    make_console(stderr=True).print(
         "\n🔒 New (optional): protect your saved login in your OS keystore → nlm auth storage set protected",
         soft_wrap=True,
+        highlight=False,
     )
     mark_cli_notice_shown()

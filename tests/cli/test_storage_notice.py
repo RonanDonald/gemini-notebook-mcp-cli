@@ -65,14 +65,15 @@ def test_cli_notice_appears_on_tty_when_eligible(monkeypatch, fake_credential_st
     captured = capsys.readouterr()
     assert (
         "🔒 New (optional): protect your saved login in your OS keystore → nlm auth storage set protected"
-        in captured.out
+        in captured.err
     )
+    assert captured.out == ""
     assert is_cli_notice_shown()
 
     # Second call must not print
     print_storage_mode_notification()
     captured2 = capsys.readouterr()
-    assert "🔒 New" not in captured2.out
+    assert "🔒 New" not in captured2.err
 
 
 def test_cli_notice_omitted_on_non_tty(monkeypatch, fake_credential_store, capsys):
@@ -87,7 +88,7 @@ def test_cli_notice_omitted_on_non_tty(monkeypatch, fake_credential_store, capsy
 
     print_storage_mode_notification()
     captured = capsys.readouterr()
-    assert "🔒 New" not in captured.out
+    assert "🔒 New" not in captured.out + captured.err
     assert not is_cli_notice_shown()
 
 
@@ -104,4 +105,4 @@ def test_cli_notice_omitted_when_already_protected(monkeypatch, fake_credential_
 
     print_storage_mode_notification()
     captured = capsys.readouterr()
-    assert "🔒 New" not in captured.out
+    assert "🔒 New" not in captured.out + captured.err
