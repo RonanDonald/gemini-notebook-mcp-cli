@@ -210,7 +210,12 @@ def _offer_plain_backup_cleanup(candidates: list[Path]) -> None:
     for c in candidates:
         console.print(f"  - {c}")
     question = "Delete this old plain copy?" if n == 1 else f"Delete these {n} old plain copies?"
-    if typer.confirm(question, default=False):
+    try:
+        confirmed = typer.confirm(question, default=False)
+    except typer.Abort:  # no keyboard (script / closed stdin): treat as No
+        console.print("[dim]Kept them (no answer).[/dim]")
+        return
+    if confirmed:
         removed = len(remove_plain_backup_files(candidates))
         console.print(f"Removed {removed} old plain {'copy' if removed == 1 else 'copies'}.")
 
@@ -1032,9 +1037,8 @@ def storage_set(
             if picked is None:
                 raise typer.Exit(130)
             targets = picked
-            if not targets:
+            if not targets and any(_mode_of(p) != mode for p in profiles):
                 console.print("[dim]Nothing selected. No changes.[/dim]")
-                return
         else:
             targets = [get_config().auth.default_profile]
 
@@ -1064,12 +1068,14 @@ def storage_set(
             console.print(f"[red]Error:[/red] {err}")
 
         changed = [r["profile"] for r in results if r.get("status") != "unchanged"]
-        if mode == "protected" and changed:
-            if sys.platform == "darwin":
+        if mode == "protected":
+            if changed and sys.platform == "darwin":
                 console.print(
                     "[dim]Usually no popup. If one appears, enter your Mac login password and click Always Allow.[/dim]"
                 )
-            backups = sorted({f for name in changed for f in find_plain_backup_files(name)})
+            # Offer old plain backups of every protected profile, not just this run's.
+            protected_now = [p for p in profiles if _mode_of(p) == "protected"]
+            backups = sorted({f for name in protected_now for f in find_plain_backup_files(name)})
             _offer_plain_backup_cleanup(backups)
 
         others = [p for p in profiles if p not in targets and _mode_of(p) not in (mode, None)]

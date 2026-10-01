@@ -120,3 +120,42 @@ def test_picker_reports_when_everything_is_already_protected():
         ["default", "personal"], "protected", {"default": "protected", "personal": "protected"}
     )
     assert picked == []
+
+
+def test_backups_of_already_protected_profiles_are_offered(monkeypatch):
+    """Jacob's case: 'default' protected earlier with a backup left; switching 'personal' offers it."""
+    runner.invoke(app, ["auth", "storage", "set", "protected", "--profile", "default"], input="n\n")
+    bak = get_profile_dir("default") / "cookies.json.bak"
+    bak.write_text(json.dumps(REAL_COOKIE_LIST), encoding="utf-8")
+
+    monkeypatch.setattr(main, "_is_terminal", lambda: True)
+    monkeypatch.setattr(main, "_pick_profiles_for_mode", lambda *a: ["personal"])
+    res = runner.invoke(app, ["auth", "storage", "set", "protected"], input="y\n")
+    assert res.exit_code == 0, res.output
+    assert "Delete this old plain copy?" in res.output
+    assert not bak.exists()
+
+
+def test_cleanup_offered_even_when_everything_is_already_protected(monkeypatch):
+    runner.invoke(app, ["auth", "storage", "set", "protected", "--all"], input="n\n")
+    bak = get_profile_dir("personal") / "cookies.json.bak"
+    bak.write_text(json.dumps(REAL_COOKIE_LIST), encoding="utf-8")
+
+    monkeypatch.setattr(main, "_is_terminal", lambda: True)
+    res = runner.invoke(app, ["auth", "storage", "set", "protected"], input="n\n")
+    assert res.exit_code == 0, res.output
+    assert "All saved logins are already protected" in res.output
+    assert "Nothing selected" not in res.output
+    assert "Delete this old plain copy?" in res.output
+    assert bak.exists()
+
+
+def test_cleanup_question_without_keyboard_keeps_files():
+    bak = get_profile_dir("default") / "cookies.json.bak"
+    bak.write_text(json.dumps(REAL_COOKIE_LIST), encoding="utf-8")
+    res = runner.invoke(
+        app, ["auth", "storage", "set", "protected", "--profile", "default"], input=""
+    )
+    assert res.exit_code == 0, res.output
+    assert "Kept them (no answer)" in res.output
+    assert bak.exists()
