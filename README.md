@@ -53,10 +53,22 @@
 
 Three commands take you from nothing to a connected AI assistant:
 
+1. Install (gives you `nlm` and the MCP server):
+
 ```bash
-uv tool install notebooklm-mcp-cli   # 1. Install (gives you `nlm` and the MCP server)
-nlm login                            # 2. Sign in to your Google account
-nlm setup                            # 3. Connect your AI tools
+uv tool install notebooklm-mcp-cli
+```
+
+2. Sign in to your Google account:
+
+```bash
+nlm login
+```
+
+3. Connect your AI tools:
+
+```bash
+nlm setup
 ```
 
 ### The setup wizard (`nlm setup`)
