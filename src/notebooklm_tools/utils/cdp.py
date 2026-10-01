@@ -1849,6 +1849,28 @@ def cleanup_chrome_profile_cache(profile_name: str = "default") -> int:
     return bytes_freed
 
 
+def _validate_headless_candidate(tokens: "Any", profile_name: str) -> bool:
+    """Prove extracted browser credentials work before replacing saved auth."""
+    from notebooklm_tools.core.client import NotebookLMClient
+
+    try:
+        with NotebookLMClient(
+            cookies=tokens.cookies,
+            csrf_token=tokens.csrf_token,
+            session_id=tokens.session_id,
+            build_label=tokens.build_label or "",
+            base_host=tokens.base_host or "",
+            profile_name=profile_name,
+            # Candidate validation must not persist token rotations before the
+            # candidate itself has been accepted and saved by run_headless_auth.
+            is_env_auth=True,
+        ) as client:
+            client.list_notebooks()
+        return True
+    except Exception:
+        return False
+
+
 def run_headless_auth(
     port: int = 9223,
     timeout: int = 30,
@@ -1971,7 +1993,9 @@ def run_headless_auth(
         session_id = extract_session_id(html)
         base_host = urlparse(current_url).hostname or ""
 
-        # Create and save tokens
+        # Build a candidate first. Do not replace saved credentials until
+        # an authenticated NotebookLM RPC proves the extracted browser session
+        # works outside the browser context.
         tokens = AuthTokens(
             cookies=cookies_list,
             csrf_token=csrf_token or "",
@@ -1979,6 +2003,9 @@ def run_headless_auth(
             base_host=base_host,
             extracted_at=time.time(),
         )
+        if not _validate_headless_candidate(tokens, profile_name):
+            return None
+
         save_kwargs: dict[str, Any] = {"profile_name": profile_name}
         if expected_revision is not None:
             save_kwargs["expected_revision"] = expected_revision
