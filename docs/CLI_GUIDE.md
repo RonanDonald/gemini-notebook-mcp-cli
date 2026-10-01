@@ -45,7 +45,8 @@ nlm auth storage status --profile work
 nlm auth storage status --json
 
 # Set storage mode (file or protected)
-nlm auth storage set protected
+nlm auth storage set protected            # in a terminal: pick which saved logins
+nlm auth storage set protected --all      # every saved login at once
 nlm auth storage set protected --profile work
 nlm auth storage set file
 nlm auth storage set file --profile work

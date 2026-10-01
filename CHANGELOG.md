@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Protected mode credential storage (`nlm auth storage`)** — Secure your saved Google login on personal computers by encrypting credentials at rest using AES-256-GCM (`credentials.enc`) with the encryption key stored in your operating system's native keystore (macOS Keychain, Windows Credential Manager, Linux SecretService).
   - Optional: File mode remains the default, and upgrading changes nothing until enabled.
   - Subcommands: `nlm auth storage status`, `set protected|file`, `resolve file|protected`, and `relocate`.
+  - `set` shows a picker in a terminal when you have several saved logins, so you choose which ones to switch; `--all` switches every one. Without a terminal it acts on the default profile and lists any profiles still in the other mode.
   - Conflict detection and interactive resolution for divergent file vs protected credentials.
   - Fast MCP hot-path with in-memory caching (no keychain access on ordinary tool calls) and revision checks.
   - Safe multi-process token rotation with single-flight reloads and compare-and-save semantics.

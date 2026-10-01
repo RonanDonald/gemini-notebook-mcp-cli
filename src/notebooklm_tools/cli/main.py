@@ -993,47 +993,144 @@ def storage_set(
         None,
         "--profile",
         "-p",
-        help="Profile to set (default: configured default profile)",
+        help="Profile to set (default: pick from a list in a terminal, else the default profile)",
+    ),
+    all_profiles: bool = typer.Option(
+        False, "--all", help="Apply to every saved profile not already in this mode"
     ),
     json_output: bool = typer.Option(False, "--json", "-j", help="Output as JSON"),
 ) -> None:
-    """Set credential storage mode for a profile."""
+    """Set credential storage mode for one or more profiles.
+
+    In a terminal with several saved logins and no --profile, shows a picker.
+    """
     import sys
 
     from notebooklm_tools.cli.formatters import print_json
-    from notebooklm_tools.services.auth_storage import set_storage_mode
+    from notebooklm_tools.services.auth import AuthManager
+    from notebooklm_tools.services.auth_storage import find_plain_backup_files, set_storage_mode
     from notebooklm_tools.services.errors import ServiceError, ValidationError
-    from notebooklm_tools.utils.config import ConfigError
+    from notebooklm_tools.utils.config import ConfigError, get_auth_storage_mode, get_config
+
+    mode = mode.strip().lower()
+    label = {"protected": "protected", "file": "plain"}
+
+    def _mode_of(name: str) -> str | None:
+        try:
+            return get_auth_storage_mode(name)
+        except Exception:
+            return None
 
     try:
-        res = set_storage_mode(mode=mode, profile_name=profile)
-        if json_output:
-            print_json(res)
+        profiles = sorted(AuthManager.list_profiles())
+        if profile:
+            targets = [profile]
+        elif all_profiles:
+            targets = [p for p in profiles if _mode_of(p) != mode]
+        elif mode in label and not json_output and len(profiles) > 1 and _is_terminal():
+            picked = _pick_profiles_for_mode(profiles, mode, {p: _mode_of(p) for p in profiles})
+            if picked is None:
+                raise typer.Exit(130)
+            targets = picked
+            if not targets:
+                console.print("[dim]Nothing selected. No changes.[/dim]")
+                return
         else:
-            console.print(f"[green]✓[/green] {res['message']}")
-            if mode == "protected":
-                if sys.platform == "darwin":
-                    console.print(
-                        "[dim]Usually no popup. If one appears, enter your Mac login password and click Always Allow.[/dim]"
-                    )
-                from notebooklm_tools.services.auth_storage import (
-                    find_plain_backup_files,
-                )
+            targets = [get_config().auth.default_profile]
 
-                _offer_plain_backup_cleanup(find_plain_backup_files(res["profile"]))
-    except (ServiceError, ValidationError) as e:
-        msg = getattr(e, "user_message", str(e))
+        results = []
+        errors: list[str] = []
+        for name in targets:
+            try:
+                results.append(set_storage_mode(mode=mode, profile_name=name))
+            except (ServiceError, ValidationError) as e:
+                msg = getattr(e, "user_message", str(e))
+                errors.append(msg if len(targets) == 1 else f"{name}: {msg}")
+
         if json_output:
-            print_json({"error": msg})
-        else:
-            console.print(f"[red]Error:[/red] {msg}")
-        raise typer.Exit(1) from e
+            if len(targets) == 1 and not errors:
+                print_json(results[0])
+            elif len(targets) == 1:
+                print_json({"error": errors[0]})
+            else:
+                print_json({"results": results, "errors": errors})
+            if errors:
+                raise typer.Exit(1)
+            return
+
+        for res in results:
+            console.print(f"[green]✓[/green] {res['message']}")
+        for err in errors:
+            console.print(f"[red]Error:[/red] {err}")
+
+        changed = [r["profile"] for r in results if r.get("status") != "unchanged"]
+        if mode == "protected" and changed:
+            if sys.platform == "darwin":
+                console.print(
+                    "[dim]Usually no popup. If one appears, enter your Mac login password and click Always Allow.[/dim]"
+                )
+            backups = sorted({f for name in changed for f in find_plain_backup_files(name)})
+            _offer_plain_backup_cleanup(backups)
+
+        others = [p for p in profiles if p not in targets and _mode_of(p) not in (mode, None)]
+        if others and mode in label:
+            other_label = label["file" if mode == "protected" else "protected"]
+            console.print(f"\n[yellow]Still {other_label}:[/yellow] {', '.join(others)}")
+            console.print(
+                f"  Switch them too: nlm auth storage set {mode} --all  (or --profile <name>)"
+            )
+        if errors:
+            raise typer.Exit(1)
     except ConfigError as e:
         if json_output:
             print_json({"error": str(e)})
         else:
             console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1) from e
+
+
+def _is_terminal() -> bool:
+    """True when both stdin and stdout are an interactive terminal."""
+    import sys
+
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _pick_profiles_for_mode(
+    profiles: list[str], mode: str, modes: dict[str, str | None]
+) -> list[str] | None:
+    """Checkbox picker of saved profiles; ones already in `mode` are shown but disabled."""
+    from typing import cast
+
+    import questionary  # type: ignore[import-not-found]
+
+    from notebooklm_tools.cli.commands.setup import WIZARD_STYLE
+
+    label = {"protected": "protected", "file": "plain", None: "unknown"}
+    target_label = "protected" if mode == "protected" else "plain"
+    if all(modes.get(p) == mode for p in profiles):
+        console.print(f"[green]✓[/green] All saved logins are already {target_label}.")
+        return []
+
+    width = max(len(p) for p in profiles)
+    choices = [
+        questionary.Choice(
+            title=f"{p.ljust(width)}   {label.get(modes.get(p), 'unknown')}",
+            value=p,
+            disabled=f"already {target_label}" if modes.get(p) == mode else None,
+        )
+        for p in profiles
+    ]
+    verb = "protected" if mode == "protected" else "switched back to plain files"
+    return cast(
+        list[str] | None,
+        questionary.checkbox(
+            f"Which saved logins should be {verb}?",
+            choices=choices,
+            instruction="(↑↓ move · Space select · Enter confirm)",
+            style=WIZARD_STYLE,
+        ).ask(),
+    )
 
 
 @storage_app.command("resolve")

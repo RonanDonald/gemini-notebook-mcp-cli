@@ -170,7 +170,7 @@ nlm login profile delete <name>     # Delete a profile
 nlm login profile rename <old> <new> # Rename a profile
 nlm auth refresh                    # Non-interactive headless refresh (schedulers/unattended)
 nlm auth storage status             # Check credential storage mode (file or protected)
-nlm auth storage set protected      # Encrypt credentials using OS credential store
+nlm auth storage set protected      # Encrypt credentials using OS credential store (--profile X or --all)
 nlm auth storage set file           # Decrypt credentials back to plain files (downgrade prep)
 nlm auth storage resolve file       # Resolve conflict: keep plain files, discard encrypted
 nlm auth storage resolve protected  # Resolve conflict: keep encrypted, discard plain files

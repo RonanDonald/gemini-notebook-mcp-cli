@@ -134,7 +134,7 @@ nlm auth storage status [OPTIONS]
 
 ### nlm auth storage set
 
-Change credential storage mode for a profile. In `protected` mode, credentials are encrypted via the OS credential store (macOS Keychain, Windows Credential Manager, Secret Service / libsecret).
+Change credential storage mode for one or more profiles. In a terminal with several saved logins and no `--profile`, a picker lets you choose which ones (nothing pre-selected). Scripts and agents without a terminal act on the default profile and are told which profiles are still in the other mode. In `protected` mode, credentials are encrypted via the OS credential store (macOS Keychain, Windows Credential Manager, Secret Service / libsecret).
 
 ```bash
 nlm auth storage set <mode> [OPTIONS]
@@ -146,7 +146,8 @@ nlm auth storage set <mode> [OPTIONS]
 
 | Option | Short | Description |
 |--------|-------|-------------|
-| `--profile` | `-p` | Profile to set (default: configured default profile) |
+| `--profile` | `-p` | Profile to set (skips the picker) |
+| `--all` | | Apply to every saved profile not already in this mode |
 | `--json` | `-j` | Output as JSON |
 
 > **Downgrade Preparation**: If downgrading to an older version of `notebooklm-mcp-cli` that does not support Protected mode, run `nlm auth storage set file` for every protected profile first to restore plaintext files.

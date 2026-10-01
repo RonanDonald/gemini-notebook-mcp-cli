@@ -256,11 +256,14 @@ def set_storage_mode(mode: str, profile_name: str | None = None) -> StorageSetRe
 
         try:
             res = migrate_profile_to_protected(resolved_profile)
-            msg = (
-                f"Storage mode set to 'protected' for profile '{resolved_profile}'."
-                if not res.get("removed_files")
-                else f"Storage mode set to 'protected' for profile '{resolved_profile}'. Migrated and removed {len(res['removed_files'])} plain files."
-            )
+            msg = f"Storage mode set to 'protected' for profile '{resolved_profile}'."
+            removed = list(res.get("removed_files") or [])
+            if removed:
+                one = len(removed) == 1
+                msg += (
+                    f" Its plain login file{'' if one else 's'} ({', '.join(removed)}) "
+                    f"{'was' if one else 'were'} replaced by the encrypted copy."
+                )
             return StorageSetResult(
                 profile=resolved_profile,
                 mode="protected",
@@ -623,6 +626,13 @@ def rename_profile(old_name: str, new_name: str) -> RenameProfileResult:
     )
 
 
+def _same_path(a: Path, b: Path) -> bool:
+    try:
+        return a.resolve() == b.resolve()
+    except OSError:
+        return False
+
+
 def find_plain_backup_files(
     profile_name: str,
     storage_dir: Path | None = None,
@@ -637,9 +647,16 @@ def find_plain_backup_files(
     as JSON containing login credential keys:
     - `auth.json.backup-*` directly in the storage root
     - `cookies.json.bak`, `auth.json.bak`, or `metadata.json.bak` inside that profile's folder
-    - Legacy `~/.notebooklm-mcp/auth.json`
+    - Legacy `~/.notebooklm-mcp/auth.json` and `auth.json.backup*`
+
+    Login files come in two shapes: a dict with a "cookies" key, or a list of
+    cookie objects (each with "name" and "value"), as saved in cookies.json.
     """
-    from notebooklm_tools.utils.config import get_legacy_storage_dir, get_storage_dir
+    from notebooklm_tools.utils.config import (
+        get_home_dir,
+        get_legacy_storage_dir,
+        get_storage_dir,
+    )
 
     root = storage_dir if storage_dir is not None else get_storage_dir()
 
@@ -659,25 +676,40 @@ def find_plain_backup_files(
             if target.is_file() and not target.is_symlink():
                 candidates.append(target)
 
-    # 3. Legacy ~/.notebooklm-mcp/auth.json
-    legacy_dir = home_dir / ".notebooklm-mcp" if home_dir is not None else get_legacy_storage_dir()
-    legacy_file = legacy_dir / "auth.json"
-    if legacy_file.is_file() and not legacy_file.is_symlink():
-        candidates.append(legacy_file)
+    # 3. Legacy ~/.notebooklm-mcp/auth.json and its auth.json.backup* copies.
+    # Only when storage is at its normal home location: a custom storage path
+    # (sandbox, test, server) must never pull in the real home's legacy files.
+    legacy_files: list[Path] = []
+    if home_dir is not None:
+        legacy_dir: Path | None = home_dir / ".notebooklm-mcp"
+    elif _same_path(root, get_home_dir() / ".notebooklm-mcp-cli"):
+        legacy_dir = get_legacy_storage_dir()
+    else:
+        legacy_dir = None
+    if legacy_dir is not None:
+        legacy_files.append(legacy_dir / "auth.json")
+        if legacy_dir.is_dir():
+            legacy_files += sorted(legacy_dir.glob("auth.json.backup*"))
+    for legacy_file in legacy_files:
+        if legacy_file.is_file() and not legacy_file.is_symlink():
+            candidates.append(legacy_file)
+
+    def _is_cookie_list(data: object) -> bool:
+        return (
+            isinstance(data, list)
+            and bool(data)
+            and all(isinstance(c, dict) and "name" in c and "value" in c for c in data)
+        )
 
     valid_files: list[Path] = []
     for path in candidates:
         try:
-            content = path.read_text(encoding="utf-8")
-            data = json.loads(content)
-            if not isinstance(data, dict):
-                continue
+            data = json.loads(path.read_text(encoding="utf-8"))
             if path.name == "metadata.json.bak":
-                if "csrf_token" in data or "session_id" in data:
+                if isinstance(data, dict) and ("csrf_token" in data or "session_id" in data):
                     valid_files.append(path)
-            else:
-                if "cookies" in data:
-                    valid_files.append(path)
+            elif (isinstance(data, dict) and "cookies" in data) or _is_cookie_list(data):
+                valid_files.append(path)
         except Exception:
             continue
 

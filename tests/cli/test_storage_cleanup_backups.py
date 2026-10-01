@@ -18,7 +18,8 @@ def setup_env(tmp_path, monkeypatch, fake_credential_store):
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("USERPROFILE", str(fake_home))
     monkeypatch.setattr(Path, "home", lambda: fake_home)
-    monkeypatch.setenv("NOTEBOOKLM_MCP_CLI_PATH", str(tmp_path))
+    # Storage at its normal location under the (fake) home, so legacy files count
+    monkeypatch.setenv("NOTEBOOKLM_MCP_CLI_PATH", str(fake_home / ".notebooklm-mcp-cli"))
     reset_config()
     yield
     reset_config()
@@ -124,7 +125,26 @@ def test_cleanup_defaults_to_no(tmp_path, monkeypatch, fake_credential_store):
     assert res.exit_code == 0
     assert "Found 1 old plain login backup:" in res.output
     assert "Delete this old plain copy?" in res.output
-    assert "Removed" not in res.output
+    assert "old plain copy." not in res.output and "old plain copies." not in res.output
 
     # Candidate file still exists
     assert root_backup.exists()
+
+
+def test_custom_storage_path_never_offers_home_legacy_files(tmp_path, monkeypatch):
+    """With storage moved elsewhere (sandbox/server), the home's legacy folder is off limits."""
+    from notebooklm_tools.utils.config import get_legacy_storage_dir
+
+    legacy_dir = get_legacy_storage_dir()
+    legacy_dir.mkdir(parents=True, exist_ok=True)
+    legacy_auth = legacy_dir / "auth.json"
+    legacy_auth.write_text('{"cookies": {"SID": "legacy_sid"}}', encoding="utf-8")
+
+    monkeypatch.setenv("NOTEBOOKLM_MCP_CLI_PATH", str(tmp_path / "custom_storage"))
+    reset_config()
+    AuthManager("default").save_profile(cookies={"SID": "active_sid"}, email="user@example.com")
+
+    assert legacy_auth not in find_plain_backup_files("default")
+    res = runner.invoke(app, ["auth", "storage", "set", "protected"], input="y\n")
+    assert res.exit_code == 0
+    assert legacy_auth.exists()
