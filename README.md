@@ -15,6 +15,8 @@
 >
 >     nlm auth storage set protected
 >
+> 💡 You can also use the 'nlm setup' wizard and select the 'Credentials Protection' option in the wizard
+> 
 > Optional: nothing changes unless you turn it on. Servers, cron, Docker and SSH setups can keep the plain file.
 > [How it works](docs/AUTHENTICATION.md#protected-storage)
 
