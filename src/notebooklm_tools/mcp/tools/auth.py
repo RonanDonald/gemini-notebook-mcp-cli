@@ -43,29 +43,22 @@ def refresh_auth() -> ResultDict:
         from notebooklm_tools.services.auth import load_cached_tokens
 
         cached = load_cached_tokens()
+        stale_cached: tuple[str, str | None] | None = None
         if cached:
-            # Honesty check FIRST: reloading tokens from disk is NOT a successful
-            # re-auth if those tokens are already dead. Validate live before
-            # creating any client, otherwise agents loop on doomed studio calls
-            # (and we leave a client object initialized with bad tokens behind).
+            # A disk reload is only success if the credentials still work. If
+            # they are stale, keep going: the saved browser profile may still be
+            # able to mint fresh credentials via the headless recovery path.
             from notebooklm_tools.services.auth import credentials_are_usable
 
             usable, status, detail = credentials_are_usable(force=True)
-            if not usable:
-                return error_result(
-                    "Auth tokens were reloaded from disk but are no longer valid "
-                    f"(reason: {status}). A disk reload cannot revive expired "
-                    "credentials — run `nlm login` in a terminal to re-authenticate.",
-                    status="expired",
-                    reason=status,
-                    details=detail,
-                )
-            reset_client()
-            get_client()
-            return {
-                "status": "success",
-                "message": "Auth tokens reloaded from disk cache and validated.",
-            }
+            if usable:
+                reset_client()
+                get_client()
+                return {
+                    "status": "success",
+                    "message": "Auth tokens reloaded from disk cache and validated.",
+                }
+            stale_cached = (status, detail)
 
         # Try headless auth if the configured default Chrome profile exists
         try:
@@ -83,6 +76,17 @@ def refresh_auth() -> ResultDict:
                 }
         except Exception:
             pass
+
+        if stale_cached is not None:
+            status, detail = stale_cached
+            return error_result(
+                "Cached auth is no longer valid and the saved browser profile "
+                "could not refresh it automatically. Run `nlm login` in a terminal "
+                "to re-authenticate.",
+                status="expired",
+                reason=status,
+                details=detail,
+            )
 
         return {
             "status": "error",
