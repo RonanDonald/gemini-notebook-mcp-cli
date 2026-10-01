@@ -25,7 +25,7 @@ If you have never used `notebooklm-mcp-cli` before, the path is:
    from a managed browser session. See the
    [Authentication Guide](AUTHENTICATION.md) for the supported methods
    and how multi-profile auth works.
-   > 🔒 **Tip:** On a personal computer, encrypt your stored login in your computer's OS keychain with `nlm auth storage set protected`. See [Protected Storage](AUTHENTICATION.md#protected-storage).
+   > 🔒 **Tip:** On a personal computer, encrypt your stored login in your computer's OS keystore with `nlm auth storage set protected`. See [Protected Storage](AUTHENTICATION.md#protected-storage).
 3. **Connect an agent** — run the setup wizard and choose your app:
    ```bash
    nlm setup

@@ -384,14 +384,14 @@ The prompt asks for your **Mac login password**: type it, then click **Always Al
 
 ### Where Protected Mode Cannot Work
 
-Protected mode requires an active, interactive desktop session with an unlocked OS keystore. Remote and headless sessions cannot use the keychain (Credential Manager on Windows, Keychain on macOS). Specifically, it cannot work in:
+Protected mode requires an active, interactive desktop session with an unlocked OS keystore. Remote and headless sessions cannot use the OS keystore (Keychain on macOS, Credential Manager on Windows). Specifically, it cannot work in:
 - **Headless Linux servers, Docker containers, or cron jobs** without a D-Bus session bus.
 - **Windows SSH sessions, Windows services, or Scheduled Tasks** set to "Run whether user is logged on or not" (Windows error 1312: Windows Credential Manager requires an interactive logon session).
 - **macOS over SSH sessions** or prior to user login after a reboot (the macOS Keychain is locked or unavailable over remote SSH sessions).
 
 If you run `nlm auth storage set protected` in an unsupported environment, it safely refuses with a clear error message:
 > *Cannot enable protected mode: OS credential store is unavailable or locked.*
-> *Remote/SSH sessions can't use the keychain (Credential Manager on Windows, Keychain on macOS). Run this from the desktop, or keep this profile in file mode. Your current setup keeps working.*
+> *Remote/SSH sessions can't use the OS keystore (Keychain on macOS, Credential Manager on Windows). Run this from the desktop, or keep this profile in file mode. Your current setup keeps working.*
 
 Your existing setup continues working in file mode. Keep automated, remote, and server profiles in file mode.
 

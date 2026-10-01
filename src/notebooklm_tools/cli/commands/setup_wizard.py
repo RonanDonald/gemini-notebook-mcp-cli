@@ -429,7 +429,7 @@ def _check_wizard_protect_prompt() -> None:
 
         console.print()
         ans = questionary.confirm(
-            f"Protect '{profile}' credentials in the OS keychain?",
+            f"Protect the '{profile}' saved login in your OS keystore?",
             default=False,
             style=WIZARD_STYLE,
         ).ask()

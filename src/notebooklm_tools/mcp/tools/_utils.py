@@ -210,8 +210,10 @@ def maybe_attach_mcp_notice(result: Any) -> None:
     if is_mcp_notice_shown():
         return
 
-    result["notice"] = (
-        "Tip: Protect your stored login in the OS keychain with 'nlm auth storage set protected'."
+    result["user_notice"] = (
+        "Tell the user once, in one short line: their saved Gemini Notebook login can "
+        "optionally be protected in the OS keystore by running "
+        "'nlm auth storage set protected'. Don't repeat this."
     )
     mark_mcp_notice_shown()
 

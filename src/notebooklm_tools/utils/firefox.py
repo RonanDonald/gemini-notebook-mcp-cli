@@ -217,7 +217,7 @@ def run_headless_auth(
             raise BackendUnavailableError(
                 f"Cannot access credentials for profile '{profile_name}': "
                 "OS credential store is locked or unavailable.\n"
-                "Unlock your keychain / run this from your desktop session and retry. "
+                "Unlock your OS keystore / run this from your desktop session and retry. "
                 f"To stop using Protected mode for this profile, run 'nlm auth storage set file --profile {profile_name}' from your desktop session."
             )
 

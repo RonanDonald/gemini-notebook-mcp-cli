@@ -93,7 +93,7 @@ def refresh_auth() -> ResultDict:
             str(exc),
             hint=(
                 "OS credential store is locked or unavailable. "
-                "Unlock your keychain / run this from your desktop session and retry."
+                "Unlock your OS keystore / run this from your desktop session and retry."
             ),
         )
     except Exception as e:
@@ -216,7 +216,7 @@ def save_auth_tokens(
             str(exc),
             hint=(
                 "OS credential store is locked or unavailable. "
-                "Unlock your keychain / run this from your desktop session and retry."
+                "Unlock your OS keystore / run this from your desktop session and retry."
             ),
         )
     except Exception as e:

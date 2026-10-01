@@ -87,7 +87,7 @@ def test_backups_folder_survives_cleanup(tmp_path, monkeypatch, fake_credential_
     # Run nlm auth storage set protected with input 'y' to confirm deletion
     res = runner.invoke(app, ["auth", "storage", "set", "protected"], input="y\n")
     assert res.exit_code == 0
-    assert "Found 4 older plaintext backup file(s):" in res.output
+    assert "Found 4 old plain login backups:" in res.output
     assert "Delete these 4 old plain copies?" in res.output
     assert "Removed 4 old plain copies." in res.output
     # Must say "removed", not "securely removed"
@@ -122,7 +122,8 @@ def test_cleanup_defaults_to_no(tmp_path, monkeypatch, fake_credential_store):
     # Press Enter (empty input -> default No)
     res = runner.invoke(app, ["auth", "storage", "set", "protected"], input="\n")
     assert res.exit_code == 0
-    assert "Delete these 1 old plain copies?" in res.output
+    assert "Found 1 old plain login backup:" in res.output
+    assert "Delete this old plain copy?" in res.output
     assert "Removed" not in res.output
 
     # Candidate file still exists

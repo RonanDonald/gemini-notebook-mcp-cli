@@ -436,7 +436,7 @@ def migrate_profile_to_protected(profile_name: str) -> dict[str, Any]:
     if not store.is_available():
         raise BackendUnavailableError(
             "Cannot enable protected mode: OS credential store is unavailable or locked.\n"
-            "Remote/SSH sessions can't use the keychain (Credential Manager on Windows, Keychain on macOS). "
+            "Remote/SSH sessions can't use the OS keystore (Keychain on macOS, Credential Manager on Windows). "
             "Run this from the desktop, or keep this profile in file mode. Your current setup keeps working."
         )
 

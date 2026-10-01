@@ -49,6 +49,7 @@ mcp = FastMCP(
 **Account Switching:** To switch Google Accounts for the MCP server, run `nlm login switch <profile>` in Bash. The MCP server instantly uses the active default profile.
 **Confirmation:** Tools with confirm param require user approval before setting confirm=True.
 **Studio:** After creating audio/video/infographic/slides, poll studio_status for completion.
+**User notices:** If a tool result contains `user_notice`, relay it to the user once in one short line.
 
 Consolidated tools:
 - source_add(source_type=url|text|drive|file, url=..., document_id=..., text=..., file_path=...): Add any source type

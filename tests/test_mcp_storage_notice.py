@@ -8,11 +8,18 @@ from notebooklm_tools.core.auth import AuthManager
 from notebooklm_tools.core.credential_backend_worker import CredentialWorkerClient
 from notebooklm_tools.mcp.tools._utils import (
     _mcp_probe_event,
+    reset_mcp_probe_state,
     start_mcp_background_probe,
 )
 from notebooklm_tools.mcp.tools.server import server_info
 from notebooklm_tools.services.auth_storage import set_storage_mode
 from notebooklm_tools.utils.config import reset_config
+
+EXPECTED_NOTICE = (
+    "Tell the user once, in one short line: their saved Gemini Notebook login can "
+    "optionally be protected in the OS keystore by running "
+    "'nlm auth storage set protected'. Don't repeat this."
+)
 
 
 @pytest.fixture(autouse=True)
@@ -53,12 +60,10 @@ def test_100_mcp_tool_calls_zero_tool_call_probes_and_no_delay(monkeypatch, fake
         res = server_info()
         assert res["status"] == "success"
         if i == 0:
-            assert (
-                res.get("notice")
-                == "Tip: Protect your stored login in the OS keychain with 'nlm auth storage set protected'."
-            )
+            assert res.get("user_notice") == EXPECTED_NOTICE
         else:
-            assert "notice" not in res
+            assert "user_notice" not in res
+        assert "storage_notice" not in res
     elapsed = time.perf_counter() - t0
 
     # ZERO probes occurred during the 100 tool calls
@@ -67,25 +72,32 @@ def test_100_mcp_tool_calls_zero_tool_call_probes_and_no_delay(monkeypatch, fake
     assert elapsed < 1.0
 
 
-def test_server_info_wording_and_visibility(monkeypatch, fake_credential_store):
-    """server_info shows storage_notice only when in file mode and keystore is available."""
+def test_user_notice_sent_once_across_restarts(monkeypatch, fake_credential_store):
+    """The AI receives the notice exactly once per install, even after a server restart."""
     auth = AuthManager("default")
     auth.save_profile(cookies={"SID": "test_sid"}, email="user@example.com")
 
-    # Keystore is available and profile is file mode
     start_mcp_background_probe(force=True)
     assert _mcp_probe_event.wait(timeout=5.0), "Background probe timed out"
-    info = server_info()
-    expected_text = (
-        "Optional: this login can be protected in the OS keychain with "
-        "'nlm auth storage set protected'. Mention it to the user once if relevant."
-    )
-    assert info.get("storage_notice") == expected_text
+    assert server_info().get("user_notice") == EXPECTED_NOTICE
+    assert "user_notice" not in server_info()
 
-    # When switched to protected mode, storage_notice must NOT be present
+    # Simulated restart: a fresh background probe must not bring the notice back
+    reset_mcp_probe_state()
+    start_mcp_background_probe(force=True)
+    assert _mcp_probe_event.wait(timeout=5.0), "Background probe timed out"
+    assert "user_notice" not in server_info()
+
+
+def test_user_notice_never_sent_when_already_protected(monkeypatch, fake_credential_store):
+    """A profile already in protected mode never gets the notice."""
+    auth = AuthManager("default")
+    auth.save_profile(cookies={"SID": "test_sid"}, email="user@example.com")
     set_storage_mode("protected", "default")
-    info_prot = server_info()
-    assert "storage_notice" not in info_prot
+
+    start_mcp_background_probe(force=True)
+    assert _mcp_probe_event.wait(timeout=5.0), "Background probe timed out"
+    assert "user_notice" not in server_info()
 
 
 def test_server_info_never_probes_before_background_probe(monkeypatch, fake_credential_store):
@@ -103,19 +115,20 @@ def test_server_info_never_probes_before_background_probe(monkeypatch, fake_cred
     monkeypatch.setattr(CredentialWorkerClient, "probe", counting_probe)
 
     info = server_info()
-    assert "storage_notice" not in info
+    assert "user_notice" not in info
     assert probe_calls == 0
 
 
-def test_server_info_omitted_when_keystore_unavailable(monkeypatch):
-    """server_info omits storage_notice when keystore is unavailable."""
+def test_server_info_omitted_when_keystore_unavailable(monkeypatch, fake_credential_store):
+    """No notice over SSH / non-desktop sessions."""
     auth = AuthManager("default")
     auth.save_profile(cookies={"SID": "test_sid"}, email="user@example.com")
 
     # Simulate SSH / non-desktop session
     monkeypatch.setenv("SSH_CONNECTION", "192.168.1.1 1234 192.168.1.2 22")
-    info = server_info()
-    assert "storage_notice" not in info
+    start_mcp_background_probe(force=True)
+    assert _mcp_probe_event.wait(timeout=5.0), "Background probe timed out"
+    assert "user_notice" not in server_info()
 
 
 def test_importing_server_never_starts_probe(tmp_path):

@@ -2,6 +2,7 @@
 
 import contextlib
 import logging
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -198,6 +199,22 @@ def _print_auth_valid(profile: Any, notebook_count: int | None) -> None:
         console.print(f"  Account: {profile.email}")
 
 
+def _offer_plain_backup_cleanup(candidates: list[Path]) -> None:
+    """List leftover plain login backups and offer to delete them (default No)."""
+    from notebooklm_tools.services.auth_storage import remove_plain_backup_files
+
+    if not candidates:
+        return
+    n = len(candidates)
+    console.print(f"\nFound {n} old plain login backup{'' if n == 1 else 's'}:")
+    for c in candidates:
+        console.print(f"  - {c}")
+    question = "Delete this old plain copy?" if n == 1 else f"Delete these {n} old plain copies?"
+    if typer.confirm(question, default=False):
+        removed = len(remove_plain_backup_files(candidates))
+        console.print(f"Removed {removed} old plain {'copy' if removed == 1 else 'copies'}.")
+
+
 def _maybe_prompt_protect_mode(profile: str) -> None:
     """Prompt the user to protect credentials after a successful login if eligible.
 
@@ -215,7 +232,6 @@ def _maybe_prompt_protect_mode(profile: str) -> None:
     )
     from notebooklm_tools.services.auth_storage import (
         find_plain_backup_files,
-        remove_plain_backup_files,
         set_storage_mode,
     )
 
@@ -228,7 +244,7 @@ def _maybe_prompt_protect_mode(profile: str) -> None:
 
     console.print()
     protect = typer.confirm(
-        f"Protect '{profile}' credentials in the OS keychain?",
+        f"Protect the '{profile}' saved login in your OS keystore?",
         default=False,
     )
     record_protect_answer(profile, "yes" if protect else "no")
@@ -242,18 +258,7 @@ def _maybe_prompt_protect_mode(profile: str) -> None:
                     "[dim]Usually no popup. If one appears, enter your Mac login password and click Always Allow.[/dim]"
                 )
 
-            candidates = find_plain_backup_files(profile)
-            if candidates:
-                console.print(f"\nFound {len(candidates)} older plaintext backup file(s):")
-                for c in candidates:
-                    console.print(f"  - {c}")
-                confirm_del = typer.confirm(
-                    f"Delete these {len(candidates)} old plain copies?",
-                    default=False,
-                )
-                if confirm_del:
-                    removed = remove_plain_backup_files(candidates)
-                    console.print(f"Removed {len(removed)} old plain copies.")
+            _offer_plain_backup_cleanup(find_plain_backup_files(profile))
         except Exception as exc:
             console.print(f"[yellow]Could not enable protected mode:[/yellow] {exc}")
 
@@ -394,7 +399,7 @@ def login_callback(
             console.print(
                 f"[red]Error:[/red] Cannot access credentials for profile '{profile}': "
                 "OS credential store is locked or unavailable.\n"
-                "Unlock your keychain / run this from your desktop session and retry. "
+                "Unlock your OS keystore / run this from your desktop session and retry. "
                 f"To stop using Protected mode for this profile, run 'nlm auth storage set file --profile {profile}' from your desktop session."
             )
             raise typer.Exit(1)
@@ -1013,21 +1018,9 @@ def storage_set(
                     )
                 from notebooklm_tools.services.auth_storage import (
                     find_plain_backup_files,
-                    remove_plain_backup_files,
                 )
 
-                candidates = find_plain_backup_files(res["profile"])
-                if candidates:
-                    console.print(f"\nFound {len(candidates)} older plaintext backup file(s):")
-                    for c in candidates:
-                        console.print(f"  - {c}")
-                    confirm_del = typer.confirm(
-                        f"Delete these {len(candidates)} old plain copies?",
-                        default=False,
-                    )
-                    if confirm_del:
-                        removed = remove_plain_backup_files(candidates)
-                        console.print(f"Removed {len(removed)} old plain copies.")
+                _offer_plain_backup_cleanup(find_plain_backup_files(res["profile"]))
     except (ServiceError, ValidationError) as e:
         msg = getattr(e, "user_message", str(e))
         if json_output:
