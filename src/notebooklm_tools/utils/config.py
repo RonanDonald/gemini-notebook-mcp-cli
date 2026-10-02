@@ -507,7 +507,7 @@ class AuthConfig(BaseModel):
     browser: str = Field(
         default="auto",
         description=(
-            "Browser for auth: auto, chrome, arc, brave, dia, comet, edge, chromium, firefox, vivaldi, opera"
+            "Browser for auth: auto, chrome, arc, brave, dia, comet, edge, edge-beta, chromium, firefox, vivaldi, opera"
         ),
     )
     browser_path: str = Field(
