@@ -793,7 +793,7 @@ nlm login switch work                        # Switch default profile
 | `output.format`        | `table`   | Default output format (table, json)                                                             |
 | `output.color`         | `true`    | Enable colored output                                                                           |
 | `output.short_ids`     | `true`    | Show shortened IDs                                                                              |
-| `auth.browser`         | `auto`    | Preferred browser for login (auto, chrome, arc, dia, comet, brave, edge, chromium, firefox, vivaldi, opera) |
+| `auth.browser`         | `auto`    | Preferred browser for login (auto, chrome, arc, dia, comet, brave, edge, edge-beta, chromium, firefox, vivaldi, opera) |
 | `auth.browser_path`    | empty     | Explicit Chromium-compatible executable; overrides discovery (`NLM_BROWSER_PATH` also supported) |
 | `auth.default_profile` | `default` | Profile to use when `--profile` not specified                                                   |
 

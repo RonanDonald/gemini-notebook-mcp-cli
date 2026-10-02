@@ -14,7 +14,7 @@ Gemini Notebook uses browser cookies for authentication (there is no official AP
 - Chromium-family browsers use Chrome DevTools Protocol (CDP)
 - Firefox uses an isolated profile and reads its cookie store directly (no CDP or WebDriver required)
 
-**Supported browsers**: Google Chrome, Arc (macOS), Dia (macOS) Brave, Microsoft Edge, Chromium, Firefox, Vivaldi, Opera.
+**Supported browsers**: Google Chrome, Arc (macOS), Dia (macOS) Brave, Microsoft Edge, Microsoft Edge Beta, Chromium, Firefox, Vivaldi, Opera.
 
 On Windows, standalone Chromium is discovered in the standard machine-wide
 locations under `C:\Program Files` and `C:\Program Files (x86)`, plus the
@@ -36,7 +36,7 @@ This method launches your browser automatically and extracts cookies after you l
 
 ### Prerequisites
 
-- A supported browser installed (Chrome, Arc, Dia, Brave, Edge, Chromium, Firefox, Vivaldi, or Opera)
+- A supported browser installed (Chrome, Arc, Dia, Brave, Edge, Edge Beta, Chromium, Firefox, Vivaldi, or Opera)
 - Chromium-family browsers should be **completely closed** before running
 
 ### Steps
@@ -83,7 +83,7 @@ nlm config set auth.browser brave
 # Or use an environment variable
 export NLM_BROWSER=arc
 
-# Valid values: auto, chrome, arc, brave, edge, chromium, firefox, vivaldi, opera
+# Valid values: auto, chrome, arc, brave, edge, edge-beta, chromium, firefox, vivaldi, opera
 # If the preferred browser is not installed, falls back to auto-detection.
 ```
 

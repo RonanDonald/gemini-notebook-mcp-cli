@@ -1104,7 +1104,7 @@ nlm config set <key> <value>
 | `output.format` | `table` | Default output format (table, json) |
 | `output.color` | `true` | Enable colored output |
 | `output.short_ids` | `true` | Show shortened IDs |
-| `auth.browser` | `auto` | Preferred browser for login (auto, chrome, arc, dia, comet, brave, edge, chromium, firefox, vivaldi, opera). Falls back to auto if a preferred named browser is not found. |
+| `auth.browser` | `auto` | Preferred browser for login (auto, chrome, arc, dia, comet, brave, edge, edge-beta, chromium, firefox, vivaldi, opera). Falls back to auto if a preferred named browser is not found. |
 | `auth.browser_path` | empty | Explicit Chromium-compatible executable path. Overrides named discovery; `NLM_BROWSER_PATH` provides the environment override. |
 | `auth.default_profile` | `default` | Profile to use when `--profile` not specified. **Note:** The MCP Server always uses the active default profile. Changing this setting will instantaneously switch the MCP server's Google account. |
 

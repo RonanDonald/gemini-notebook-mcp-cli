@@ -71,7 +71,7 @@ profile is relaunched. On those accounts, set
 **Solutions:**
 
 1. **Ensure a supported Chromium-based browser is installed:**
-   Supported browsers (in priority order): Google Chrome, Arc (macOS), Dia (macOS) Brave, Microsoft Edge, Chromium, Vivaldi, Opera.
+   Supported browsers (in priority order): Google Chrome, Arc (macOS), Dia (macOS) Brave, Microsoft Edge, Microsoft Edge Beta, Chromium, Vivaldi, Opera.
 
    ```bash
    which google-chrome || which brave-browser || which chromium
