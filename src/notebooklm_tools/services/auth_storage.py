@@ -603,20 +603,29 @@ def rename_profile(old_name: str, new_name: str) -> RenameProfileResult:
 
     storage_dir = get_storage_dir()
 
-    def _browser_profile_dir(name: str) -> Path:
-        # Preserve the legacy default-profile location when it already exists.
+    def _browser_profile_dirs(name: str) -> list[Path]:
+        # Saved browser logins that belong to this auth profile. Preserve the
+        # legacy default-profile location when it already exists.
         legacy = storage_dir / "chrome-profile"
-        if name == "default" and legacy.exists():
-            return legacy
-        return storage_dir / "chrome-profiles" / name
+        chrome = legacy if name == "default" and legacy.exists() else None
+        return [
+            chrome or storage_dir / "chrome-profiles" / name,
+            storage_dir / "firefox-profiles" / name,
+        ]
 
-    old_browser_dir = _browser_profile_dir(old_clean)
-    new_browser_dir = _browser_profile_dir(new_clean)
-    if old_browser_dir.exists() and new_browser_dir.exists():
-        raise ConflictError(
-            f"Browser profile '{new_clean}' already exists; "
-            "refusing to split auth and browser identity"
-        )
+    # Pair each old browser dir with its new location. A destination that
+    # already exists belongs to someone else, so refuse before moving anything.
+    browser_moves: list[tuple[Path, Path]] = []
+    for old_path, new_path in zip(
+        _browser_profile_dirs(old_clean), _browser_profile_dirs(new_clean), strict=True
+    ):
+        if new_path.exists():
+            raise ConflictError(
+                f"Browser profile '{new_clean}' already exists ({new_path.parent.name}); "
+                "refusing to attach another browser identity to this profile"
+            )
+        if old_path.exists():
+            browser_moves.append((old_path, new_path))
 
     def _move_dir(source: Path, destination: Path) -> None:
         try:
@@ -626,17 +635,17 @@ def rename_profile(old_name: str, new_name: str) -> RenameProfileResult:
 
             shutil.move(str(source), str(destination))
 
-    browser_moved = False
+    browsers_moved: list[tuple[Path, Path]] = []
     auth_moved = False
     is_default = config.auth.default_profile == old_clean
 
     try:
-        # Keep the saved browser identity aligned with the auth profile. Move it
-        # first so an auth-rename failure can restore the browser directory.
-        if old_browser_dir.exists():
-            new_browser_dir.parent.mkdir(parents=True, exist_ok=True)
-            _move_dir(old_browser_dir, new_browser_dir)
-            browser_moved = True
+        # Keep the saved browser identities aligned with the auth profile. Move
+        # them first so an auth-rename failure can restore the browser dirs.
+        for old_path, new_path in browser_moves:
+            new_path.parent.mkdir(parents=True, exist_ok=True)
+            _move_dir(old_path, new_path)
+            browsers_moved.append((old_path, new_path))
 
         _move_dir(old_dir, new_dir)
         auth_moved = True
@@ -656,12 +665,15 @@ def rename_profile(old_name: str, new_name: str) -> RenameProfileResult:
             except Exception as rollback_exc:
                 rollback_errors.append(f"auth profile: {rollback_exc}")
 
-        if browser_moved and new_browser_dir.exists() and not old_browser_dir.exists():
-            try:
-                old_browser_dir.parent.mkdir(parents=True, exist_ok=True)
-                _move_dir(new_browser_dir, old_browser_dir)
-            except Exception as rollback_exc:
-                rollback_errors.append(f"browser profile: {rollback_exc}")
+        for old_path, new_path in reversed(browsers_moved):
+            if new_path.exists() and not old_path.exists():
+                try:
+                    old_path.parent.mkdir(parents=True, exist_ok=True)
+                    _move_dir(new_path, old_path)
+                except Exception as rollback_exc:
+                    rollback_errors.append(
+                        f"browser profile {old_path.parent.name}: {rollback_exc}"
+                    )
 
         if rollback_errors:
             raise ServiceError(
