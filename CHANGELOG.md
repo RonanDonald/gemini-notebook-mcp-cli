@@ -7,8 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-10-02
+
+> Safer, smarter login recovery, plus Microsoft Edge Beta.
+> Community release: five of these changes come from **@insane66613**.
+
+### Added
+
+- **Microsoft Edge Beta is a supported login browser.** Use `nlm config set auth.browser edge-beta`, or leave it on `auto`. Found on macOS, Linux and the usual Windows install folders. Docs and the skill reference list it too. Thanks to **@insane66613** for the browser support ([PR #345](https://github.com/jacob-bd/gemini-notebook-mcp-cli/pull/345)).
+- **Health checks can target one saved account.** The credential health check can now be asked about a specific profile, and each profile keeps its own cached result instead of all accounts sharing one. Nothing in the CLI or MCP uses this yet; it is groundwork for multi-account checks. Thanks to **@insane66613** ([PR #343](https://github.com/jacob-bd/gemini-notebook-mcp-cli/pull/343)).
+
 ### Fixed
 
+- **A fresh browser login is checked before it replaces your saved one.** Headless recovery now proves the extracted login can really talk to Gemini Notebook before saving it. If it can't, your existing saved login stays untouched. Thanks to **@insane66613** ([PR #342](https://github.com/jacob-bd/gemini-notebook-mcp-cli/pull/342)).
+- **`refresh_auth` can now recover a stale login on its own.** When saved credentials are stale, the MCP `refresh_auth` tool now tries the saved browser profile before telling you to run `nlm login` (before, that step was unreachable). It respects `NOTEBOOKLM_DISABLE_HEADLESS_REFRESH=1`, so Google Workspace accounts that lose their session when the browser is relaunched can opt out; when it is set, the message says so. Studio's "not signed in" hint was updated to match. Thanks to **@insane66613** for the fix ([PR #341](https://github.com/jacob-bd/gemini-notebook-mcp-cli/pull/341)); the opt-out check was added during review.
+- **Renaming a profile now keeps its saved browser login with it.** `nlm login profile rename` moves the Chrome browser folder (and the Firefox one) along with the account, so the next login doesn't start from a blank browser. It refuses the rename if a browser folder already exists under the new name, and rolls everything back if a later step fails. Protected profiles still can't be renamed. Thanks to **@insane66613** ([PR #344](https://github.com/jacob-bd/gemini-notebook-mcp-cli/pull/344)); the Firefox folder and the existing-folder check were added during review.
 - The first-ever creation of `installation.json` (the install identity used for protected storage) is now atomic: it is written to a temporary file and renamed into place, so a second process starting at the same moment can never read a half-written file and fail with "Corrupt or unreadable installation.json". This only affected a first protected write racing another process; it also made one CI test intermittently fail.
 
 ## [0.15.0] - 2026-10-01
