@@ -601,18 +601,85 @@ def rename_profile(old_name: str, new_name: str) -> RenameProfileResult:
     if new_dir.exists():
         raise ConflictError(f"Profile '{new_clean}' already exists")
 
-    # Move profile directory directly to preserve all files and avoid env bleed
-    try:
-        old_dir.rename(new_dir)
-    except OSError:
-        import shutil
+    storage_dir = get_storage_dir()
 
-        shutil.move(str(old_dir), str(new_dir))
+    def _browser_profile_dirs(name: str) -> list[Path]:
+        # Saved browser logins that belong to this auth profile. Preserve the
+        # legacy default-profile location when it already exists.
+        legacy = storage_dir / "chrome-profile"
+        chrome = legacy if name == "default" and legacy.exists() else None
+        return [
+            chrome or storage_dir / "chrome-profiles" / name,
+            storage_dir / "firefox-profiles" / name,
+        ]
 
+    # Pair each old browser dir with its new location. A destination that
+    # already exists belongs to someone else, so refuse before moving anything.
+    browser_moves: list[tuple[Path, Path]] = []
+    for old_path, new_path in zip(
+        _browser_profile_dirs(old_clean), _browser_profile_dirs(new_clean), strict=True
+    ):
+        if new_path.exists():
+            raise ConflictError(
+                f"Browser profile '{new_clean}' already exists ({new_path.parent.name}); "
+                "refusing to attach another browser identity to this profile"
+            )
+        if old_path.exists():
+            browser_moves.append((old_path, new_path))
+
+    def _move_dir(source: Path, destination: Path) -> None:
+        try:
+            source.rename(destination)
+        except OSError:
+            import shutil
+
+            shutil.move(str(source), str(destination))
+
+    browsers_moved: list[tuple[Path, Path]] = []
+    auth_moved = False
     is_default = config.auth.default_profile == old_clean
-    if is_default:
-        config.auth.default_profile = new_clean
-        save_config(config)
+
+    try:
+        # Keep the saved browser identities aligned with the auth profile. Move
+        # them first so an auth-rename failure can restore the browser dirs.
+        for old_path, new_path in browser_moves:
+            new_path.parent.mkdir(parents=True, exist_ok=True)
+            _move_dir(old_path, new_path)
+            browsers_moved.append((old_path, new_path))
+
+        _move_dir(old_dir, new_dir)
+        auth_moved = True
+
+        if is_default:
+            config.auth.default_profile = new_clean
+            save_config(config)
+    except Exception as exc:
+        rollback_errors: list[str] = []
+
+        if is_default:
+            config.auth.default_profile = old_clean
+
+        if auth_moved and new_dir.exists() and not old_dir.exists():
+            try:
+                _move_dir(new_dir, old_dir)
+            except Exception as rollback_exc:
+                rollback_errors.append(f"auth profile: {rollback_exc}")
+
+        for old_path, new_path in reversed(browsers_moved):
+            if new_path.exists() and not old_path.exists():
+                try:
+                    old_path.parent.mkdir(parents=True, exist_ok=True)
+                    _move_dir(new_path, old_path)
+                except Exception as rollback_exc:
+                    rollback_errors.append(
+                        f"browser profile {old_path.parent.name}: {rollback_exc}"
+                    )
+
+        if rollback_errors:
+            raise ServiceError(
+                "Profile rename failed and rollback was incomplete: " + "; ".join(rollback_errors)
+            ) from exc
+        raise
 
     msg = f"Renamed profile '{old_clean}' to '{new_clean}'"
     if is_default:
