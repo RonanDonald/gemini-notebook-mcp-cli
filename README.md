@@ -35,7 +35,7 @@
 
 |                                   **Codex Setup + Cinematic Video & Slides**                                   |
 | :------------------------------------------------------------------------------------------------------------: |
-| [![Latest](https://img.youtube.com/vi/KrgLCrvU1dw/mqdefault.jpg)](https://www.youtube.com/watch?v=KrgLCrvU1dw) |
+| [![Latest](https://img.youtube.com/vi/KrgLCrvU1dw/mqdefault.jpg?v=20261002)](https://www.youtube.com/watch?v=KrgLCrvU1dw) |
 
 ### MCP Demos
 
