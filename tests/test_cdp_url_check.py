@@ -46,6 +46,10 @@ from notebooklm_tools.utils.cdp import _is_notebooklm_url, is_logged_in
         ("https://notebook.cloud.google.com/", True),
         # Vertex AI Search enterprise host advertised by the Enterprise setup.
         ("https://vertexaisearch.cloud.google.com/", True),
+        # Signed-out landing page on the rebrand host: HTTP 200 on a NotebookLM
+        # host, but there is no session. Must not count as logged in.
+        ("https://notebook.google.com/trynow", False),
+        ("https://notebook.google.com/trynow?hl=en", False),
         # Standard Google sign-in redirect: not logged in.
         ("https://accounts.google.com/v3/signin/identifier?continue=...", False),
         ("https://accounts.google.com/", False),

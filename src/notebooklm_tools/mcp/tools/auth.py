@@ -134,6 +134,7 @@ def save_auth_tokens(
         request_url: Optional - contains session ID if extracting manually
     """
     try:
+        from notebooklm_tools.core.auth import get_auth_manager
         from notebooklm_tools.services.auth import (
             AuthTokens,
             get_cache_path,
@@ -187,12 +188,34 @@ def save_auth_tokens(
                 session_id = url_params.get("f.sid", [""])[0]
             build_label = url_params.get("bl", [""])[0]
 
+        # Detect which host accepts these cookies (legacy notebooklm.google.com
+        # vs rebranded notebook.google.com). Without this the profile falls back
+        # to the legacy host, which bounces rebranded-account cookies to login.
+        from notebooklm_tools.core.auth import detect_base_host
+
+        base_host, responses = detect_base_host(cookie_dict)
+        if not base_host and responses > 0:
+            return error_result(
+                "These cookies were rejected by Gemini Notebook (redirected to Google sign-in "
+                "on every known host). Nothing was saved.",
+                hint="Copy the Cookie header from a batchexecute request on the host you are "
+                "signed in to (e.g. https://notebook.google.com) and try again.",
+            )
+        if not base_host:
+            # Network unreachable: couldn't verify. Keep the host already on
+            # file for this profile instead of clearing it.
+            try:
+                base_host = get_auth_manager().load_profile().base_host or ""
+            except Exception:
+                base_host = ""
+
         # Create and save tokens
         tokens = AuthTokens(
             cookies=cookie_dict,
             csrf_token=csrf_token,
             session_id=session_id,
             build_label=build_label,
+            base_host=base_host,
             extracted_at=time.time(),
         )
         save_tokens_to_cache(tokens)
@@ -220,6 +243,7 @@ def save_auth_tokens(
             "status": "success",
             "message": f"Saved {len(cookie_dict)} essential cookies (filtered from {len(all_cookies)}). {token_msg}",
             "cache_path": str(saved_path),
+            "base_host": base_host or "(unverified - network unreachable)",
             "extracted_csrf": bool(csrf_token),
             "extracted_session_id": bool(session_id),
         }

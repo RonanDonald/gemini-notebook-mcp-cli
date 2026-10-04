@@ -1376,21 +1376,49 @@ def _is_notebooklm_url(url: str) -> bool:
     }
 
 
+# Signed-out landing pages served on a NotebookLM host with HTTP 200 instead of
+# redirecting to accounts.google.com. After the "Gemini Notebook" rebrand, a
+# signed-out browser hitting notebooklm.google.com ends up on
+# notebook.google.com/trynow — a URL-only check must not treat it as signed in.
+_SIGNED_OUT_PATH_PREFIXES = ("/trynow",)
+
+
 def is_logged_in(url: str) -> bool:
-    """Check login status by parsed URL hostname.
+    """Check login status by parsed URL hostname and path.
 
     Inspect the parsed hostname so query strings such as
     ``?original_referer=https://accounts.google.com#`` (which NotebookLM
     appends to the redirect target right after Google sign-in) are not
-    mistaken for an accounts.google.com redirect.
+    mistaken for an accounts.google.com redirect. Known signed-out landing
+    paths (e.g. ``/trynow``) are rejected even on a NotebookLM host.
     """
     try:
-        host = (urlparse(url).hostname or "").lower()
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        path = (parsed.path or "/").lower()
     except Exception:
         return False
     if host == "accounts.google.com" or host.endswith(".accounts.google.com"):
         return False
+    if any(path.startswith(prefix) for prefix in _SIGNED_OUT_PATH_PREFIXES):
+        return False
     return _is_notebooklm_url(url)
+
+
+def _browser_session_authenticated(ws_url: str, url: str) -> bool:
+    """URL looks signed in AND the browser actually holds Google session cookies.
+
+    The URL check alone is a heuristic; the cookie check is what proves a
+    usable session exists (guards against new signed-out landing pages).
+    """
+    if not is_logged_in(url):
+        return False
+    try:
+        from notebooklm_tools.core.auth import validate_cookies
+
+        return validate_cookies(get_page_cookies(ws_url))
+    except Exception:
+        return False
 
 
 def extract_build_label(html: str) -> str:
@@ -1705,7 +1733,7 @@ def extract_cookies_from_page(
     # Check login status
     current_url = get_current_url(ws_url)
 
-    if not is_logged_in(current_url) and wait_for_login:
+    if not _browser_session_authenticated(ws_url, current_url) and wait_for_login:
         _logger.warning("Waiting for sign-in in browser window (timeout: %ds)...", login_timeout)
         start_time = time.time()
         last_log_at = 0
@@ -1713,7 +1741,7 @@ def extract_cookies_from_page(
             time.sleep(0.5)
             try:
                 current_url = get_current_url(ws_url)
-                if is_logged_in(current_url):
+                if _browser_session_authenticated(ws_url, current_url):
                     break
             except Exception:
                 pass
@@ -1722,7 +1750,7 @@ def extract_cookies_from_page(
                 last_log_at = elapsed
                 _logger.warning("Still waiting for sign-in... (%ds elapsed)", elapsed)
 
-        if not is_logged_in(current_url):
+        if not _browser_session_authenticated(ws_url, current_url):
             raise AuthenticationError(
                 message="Login timeout",
                 hint="Please log in to NotebookLM in the connected browser window.",
@@ -1971,7 +1999,7 @@ def run_headless_auth(
         while time.time() - start < timeout:
             try:
                 current_url = get_current_url(ws_url)
-                if is_logged_in(current_url):
+                if _browser_session_authenticated(ws_url, current_url):
                     logged_in = True
                     break
             except Exception:

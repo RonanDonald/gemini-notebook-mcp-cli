@@ -884,14 +884,11 @@ class AuthManager:
 
     def login_with_file(self, file_path: str | Path) -> Profile:
         """Parse cookies from file and save to profile."""
-        from urllib.parse import urlparse
-
         from notebooklm_tools.core.exceptions import AuthenticationError
         from notebooklm_tools.utils.browser import (
             parse_cookies_from_file,
             validate_notebooklm_cookies,
         )
-        from notebooklm_tools.utils.config import _ALLOWED_BASE_HOSTS
 
         cookies = parse_cookies_from_file(file_path)
 
@@ -901,24 +898,9 @@ class AuthManager:
                 hint="Make sure the file contains cookies from a NotebookLM session.",
             )
 
-        base_urls = [get_base_url()]
-        if not os.environ.get("NOTEBOOKLM_BASE_URL"):
-            rebrand_url = "https://notebook.google.com"
-            if rebrand_url not in base_urls:
-                base_urls.append(rebrand_url)
-
-        responses = 0
-        for base_url in base_urls:
-            try:
-                response = _fetch_notebooklm_homepage(cookies, base_url=base_url)
-            except Exception as exc:
-                logger.debug("Manual login host probe failed for %s: %s", base_url, exc)
-                continue
-
-            responses += 1
-            final_host = urlparse(str(response.url)).hostname or ""
-            if response.status_code == 200 and final_host in _ALLOWED_BASE_HOSTS:
-                return self.save_profile(cookies, base_host=final_host)
+        final_host, responses = detect_base_host(cookies)
+        if final_host:
+            return self.save_profile(cookies, base_host=final_host)
 
         if responses == 0:
             raise AuthenticationError(
@@ -930,6 +912,50 @@ class AuthManager:
             message="Imported cookies were rejected by Gemini Notebook",
             hint="Export fresh cookies from an authenticated Gemini Notebook session and try again.",
         )
+
+
+def detect_base_host(
+    cookies: dict[str, str] | list[dict],
+    *,
+    timeout: float = 12.0,
+) -> tuple[str, int]:
+    """Find which Gemini Notebook host accepts these cookies.
+
+    Probes the configured base URL and, for personal accounts, the rebranded
+    ``notebook.google.com``. Returns ``(host, responses)`` where ``host`` is
+    the first host that served the app without a login redirect ("" if
+    none), and ``responses`` counts probes that got any HTTP response.
+    """
+    from urllib.parse import urlparse
+
+    from notebooklm_tools.utils.config import _ALLOWED_BASE_HOSTS
+
+    base_urls = [get_base_url()]
+    if not os.environ.get("NOTEBOOKLM_BASE_URL"):
+        rebrand_url = "https://notebook.google.com"
+        if rebrand_url not in base_urls:
+            base_urls.append(rebrand_url)
+
+    responses = 0
+    for base_url in base_urls:
+        try:
+            response = _fetch_notebooklm_homepage(cookies, base_url=base_url, timeout=timeout)
+        except Exception as exc:
+            logger.debug("Host probe failed for %s: %s", base_url, exc)
+            continue
+
+        responses += 1
+        parsed = urlparse(str(response.url))
+        final_host = parsed.hostname or ""
+        signed_out_landing = (parsed.path or "").lower().startswith("/trynow")
+        if (
+            response.status_code == 200
+            and final_host in _ALLOWED_BASE_HOSTS
+            and not signed_out_landing
+        ):
+            return final_host, responses
+
+    return "", responses
 
 
 def get_auth_manager(profile: str | None = None) -> AuthManager:
@@ -1089,10 +1115,26 @@ def check_auth(
 
     # === Live authoritative path ===
     try:
-        resp = _fetch_notebooklm_homepage(cookie_dict, timeout=timeout)
+        # Probe the host this account was last signed in on (issue #269). The
+        # legacy host bounces rebranded-account cookies to accounts.google.com.
+        resp = _fetch_notebooklm_homepage(
+            cookie_dict, timeout=timeout, base_url=get_base_url(p.base_host or None)
+        )
 
         final_url = str(resp.url)
         redirected_to_login = "accounts.google.com" in final_url
+
+        if redirected_to_login and not p.base_host and not os.environ.get("NOTEBOOKLM_BASE_URL"):
+            # Host never recorded (or erased by an older version): see whether
+            # the rebranded host accepts the session and remember it.
+            detected_host, _ = detect_base_host(cookie_dict, timeout=timeout)
+            if detected_host:
+                p.base_host = detected_host
+                resp = _fetch_notebooklm_homepage(
+                    cookie_dict, timeout=timeout, base_url=get_base_url(detected_host)
+                )
+                final_url = str(resp.url)
+                redirected_to_login = "accounts.google.com" in final_url
 
         if not redirected_to_login and resp.status_code == 200:
             # Clean authenticated homepage: fast positive. Extract fresh CSRF

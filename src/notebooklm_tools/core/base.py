@@ -1479,6 +1479,8 @@ class BaseClient:
                     self.cookies = tokens.cookies
                     self.csrf_token = tokens.csrf_token
                     self._session_id = tokens.session_id
+                    if getattr(tokens, "base_host", ""):
+                        self._base_host = tokens.base_host
                     self._auth_revision = getattr(tokens, "revision", None)
                 return True
         except StaleRevisionError:
